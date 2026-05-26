@@ -6,6 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		2231CB192FBEB2FC008D3C43 /* CLAUDE.MD in Resources */ = {isa = PBXBuildFile; fileRef = 2231CB182FBEB2F6008D3C43 /* CLAUDE.MD */; };
+		AAAA000000000000000000C1 /* Automerge in Frameworks */ = {isa = PBXBuildFile; productRef = AAAA000000000000000000B1 /* Automerge */; };
+		AAAA000000000000000000C2 /* Automerge in Frameworks */ = {isa = PBXBuildFile; productRef = AAAA000000000000000000B2 /* Automerge */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		2231CAFC2FBEB1CA008D3C43 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -27,6 +33,7 @@
 		2231CAEA2FBEB1C8008D3C43 /* flow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = flow.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2231CAFB2FBEB1CA008D3C43 /* flowTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = flowTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2231CB052FBEB1CA008D3C43 /* flowUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = flowUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		2231CB182FBEB2F6008D3C43 /* CLAUDE.MD */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CLAUDE.MD; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -52,6 +59,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AAAA000000000000000000C1 /* Automerge in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -59,6 +67,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AAAA000000000000000000C2 /* Automerge in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -75,6 +84,7 @@
 		2231CAE12FBEB1C8008D3C43 = {
 			isa = PBXGroup;
 			children = (
+				2231CB182FBEB2F6008D3C43 /* CLAUDE.MD */,
 				2231CAEC2FBEB1C8008D3C43 /* flow */,
 				2231CAFE2FBEB1CA008D3C43 /* flowTests */,
 				2231CB082FBEB1CA008D3C43 /* flowUITests */,
@@ -112,6 +122,7 @@
 			);
 			name = flow;
 			packageProductDependencies = (
+				AAAA000000000000000000B1 /* Automerge */,
 			);
 			productName = flow;
 			productReference = 2231CAEA2FBEB1C8008D3C43 /* flow.app */;
@@ -135,6 +146,7 @@
 			);
 			name = flowTests;
 			packageProductDependencies = (
+				AAAA000000000000000000B2 /* Automerge */,
 			);
 			productName = flowTests;
 			productReference = 2231CAFB2FBEB1CA008D3C43 /* flowTests.xctest */;
@@ -195,6 +207,9 @@
 			);
 			mainGroup = 2231CAE12FBEB1C8008D3C43;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AAAA000000000000000000A1 /* XCRemoteSwiftPackageReference "automerge-swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 2231CAEB2FBEB1C8008D3C43 /* Products */;
 			projectDirPath = "";
@@ -212,6 +227,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2231CB192FBEB2FC008D3C43 /* CLAUDE.MD in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -583,6 +599,30 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AAAA000000000000000000A1 /* XCRemoteSwiftPackageReference "automerge-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/automerge/automerge-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.7.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AAAA000000000000000000B1 /* Automerge */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AAAA000000000000000000A1 /* XCRemoteSwiftPackageReference "automerge-swift" */;
+			productName = Automerge;
+		};
+		AAAA000000000000000000B2 /* Automerge */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AAAA000000000000000000A1 /* XCRemoteSwiftPackageReference "automerge-swift" */;
+			productName = Automerge;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 2231CAE22FBEB1C8008D3C43 /* Project object */;
 }
