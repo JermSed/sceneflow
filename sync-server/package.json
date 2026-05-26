@@ -1,0 +1,13 @@
+{
+  "name": "sceneflow-sync-server",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local Automerge sync relay for Sceneflow. Thin wrapper around @automerge/automerge-repo-sync-server.",
+  "type": "module",
+  "scripts": {
+    "start": "automerge-repo-sync-server"
+  },
+  "dependencies": {
+    "@automerge/automerge-repo-sync-server": "^0.2.8"
+  }
+}

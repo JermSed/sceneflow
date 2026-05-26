@@ -17,12 +17,18 @@ struct BoardOpenView: View {
     @EnvironmentObject private var library: BoardLibrary
     @State private var store: BoardStore?
     @State private var loadError: String?
+    @State private var showShareSheet = false
 
     var body: some View {
         Group {
             if let store {
                 FieldView(store: store)
                     .toolbar { toolbar(for: store) }
+                    .sheet(isPresented: $showShareSheet) {
+                        if let summary = library.boards.first(where: { $0.id == boardId }) {
+                            ShareBoardSheet(summary: summary)
+                        }
+                    }
             } else if let loadError {
                 ContentUnavailableView(
                     "Couldn't open board",
@@ -35,7 +41,7 @@ struct BoardOpenView: View {
         .navigationTitle(boardName)
         .task {
             do {
-                store = try library.openBoard(id: boardId)
+                store = try await library.openBoard(id: boardId)
             } catch {
                 loadError = "\(error)"
             }
@@ -48,14 +54,8 @@ struct BoardOpenView: View {
 
     @ToolbarContentBuilder
     private func toolbar(for store: BoardStore) -> some ToolbarContent {
-        // Snapshot count as a passive read-out. Useful right now for
-        // confirming that "Capture" really did something — once the
-        // spatial field (step #4) is in, the user will see captured
-        // snapshots directly and this can come out.
         ToolbarItem(placement: .navigation) {
-            Text("\(store.canvas.snapshots.count) snapshot\(store.canvas.snapshots.count == 1 ? "" : "s")")
-                .foregroundStyle(.secondary)
-                .font(.subheadline)
+            SyncStatusIndicator(observer: library.syncStatus)
         }
 
         ToolbarItem(placement: .primaryAction) {
@@ -67,6 +67,14 @@ struct BoardOpenView: View {
             // Capturing an empty sketch would create a blank snapshot
             // — disable until there's something to freeze.
             .disabled(store.canvas.activeSketch.strokes.isEmpty)
+        }
+
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                showShareSheet = true
+            } label: {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
         }
     }
 

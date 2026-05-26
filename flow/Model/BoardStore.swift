@@ -69,6 +69,17 @@ final class BoardStore: ObservableObject {
         subscribeToDocChanges()
     }
 
+    /// Wrap an `Automerge.Document` that is owned by a Repo (so that
+    /// sync messages coming in over the network update the same doc
+    /// the UI observes). The board is adopted in-place and seeded if
+    /// the root tree isn't already there.
+    init(adopting doc: Automerge.Document) throws {
+        let board = try BoardDocument(adopting: doc)
+        self.board = board
+        self.canvas = try board.snapshot()
+        subscribeToDocChanges()
+    }
+
     /// Subscribe to the Automerge doc's "did change" publisher so that
     /// non-local edits (Phase 2 sync merges) also trigger a republish.
     /// Local mutations also fire this, which is harmless — we just

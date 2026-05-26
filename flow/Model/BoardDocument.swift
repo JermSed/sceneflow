@@ -87,13 +87,7 @@ final class BoardDocument {
     /// `activeSketch.strokes` list, both reachable from `.ROOT`.
     init() throws {
         self.doc = Automerge.Document()
-        // Build the root shape with the low-level API rather than
-        // `AutomergeEncoder.encode(CanvasDoc.empty)`. Keeping seeding
-        // and editing on the same code path means there's one schema
-        // definition, not two that could drift.
-        _ = try doc.putObject(obj: .ROOT, key: "snapshots", ty: .List)
-        let sketchId = try doc.putObject(obj: .ROOT, key: "activeSketch", ty: .Map)
-        _ = try doc.putObject(obj: sketchId, key: "strokes", ty: .List)
+        try Self.seedRoot(in: doc)
     }
 
     /// Load a board from saved bytes (from disk, or eventually a sync peer).
@@ -103,6 +97,36 @@ final class BoardDocument {
     init(data: Data) throws {
         self.doc = try Automerge.Document(data)
         _ = try AutomergeDecoder(doc: doc).decode(CanvasDoc.self)
+    }
+
+    /// Wrap an existing `Automerge.Document` — used when the document
+    /// is owned by an `AutomergeRepo.Repo` and we want the Repo's
+    /// sync to fold incoming changes into the same document our UI
+    /// is observing. The caller is responsible for having seeded the
+    /// root structure already (or for handing us a peer-fetched doc
+    /// that already has it).
+    ///
+    /// If the doc looks empty (no `activeSketch` map yet), we seed it
+    /// here. That makes this safe to call right after `repo.create()`
+    /// returns a blank handle.
+    init(adopting doc: Automerge.Document) throws {
+        self.doc = doc
+        if try doc.get(obj: .ROOT, key: "activeSketch") == nil {
+            try Self.seedRoot(in: doc)
+        } else {
+            // Sanity-check that the existing tree decodes to our model.
+            _ = try AutomergeDecoder(doc: doc).decode(CanvasDoc.self)
+        }
+    }
+
+    /// Build the root shape with the low-level API rather than
+    /// `AutomergeEncoder.encode(CanvasDoc.empty)`. Keeping seeding
+    /// and editing on the same code path means there's one schema
+    /// definition, not two that could drift.
+    private static func seedRoot(in doc: Automerge.Document) throws {
+        _ = try doc.putObject(obj: .ROOT, key: "snapshots", ty: .List)
+        let sketchId = try doc.putObject(obj: .ROOT, key: "activeSketch", ty: .Map)
+        _ = try doc.putObject(obj: sketchId, key: "strokes", ty: .List)
     }
 
     // MARK: - Snapshotting the Swift value

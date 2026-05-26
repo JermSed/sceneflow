@@ -14,8 +14,17 @@ on bad/no connectivity.
 - **Document / offline-first:** the `automerge-swift` package (Automerge CRDT). All
   collaborative state lives in an Automerge document so edits apply locally and merge
   automatically on reconnect.
-- **Sync server:** a thin relay (Automerge's existing JS sync server). It forwards
-  opaque change blobs; it does not understand the document.
+- **Sync stack:** `automerge-repo-swift` (`AutomergeRepo` module) — `Repo`,
+  `DocHandle`, and `WebSocketProvider`. This is the same path MeetingNotes
+  actually takes today (an earlier draft of this file said MeetingNotes had
+  its own networking; that's no longer true — they migrated to
+  `automerge-repo-swift`). The library is still pre-1.0; insulate every
+  `Repo` / `DocHandle` / provider call behind our model wrapper so a future
+  bump touches one place.
+- **Sync server:** `@automerge/automerge-repo-sync-server` running locally
+  during development. Lives in `sync-server/` in this repo; `npm install
+  && npm start` brings it up on `ws://localhost:3030`. It forwards opaque
+  change blobs and does not understand the document.
 - **Presence** (who's online, cursors, who's drawing): a SEPARATE ephemeral channel.
   Never store presence/cursor data in the Automerge document.
 
@@ -63,25 +72,32 @@ Design rules baked into this model:
 
 ## Critical guardrails
 
-- **Automerge API: do NOT rely on training memory.** automerge-swift is pre-1.0 and
-  niche. Before writing any Automerge call, check the current API docs
-  (https://automerge.org/automerge-swift) and the MeetingNotes sample
-  (https://github.com/automerge/MeetingNotes). If unsure of a method, say so and verify.
-- Do not reinvent networking. When we reach sync, adapt MeetingNotes' WebSocket / P2P
-  networking code rather than building from scratch. (`automerge-repo-swift` is
-  experimental and unstable — prefer MeetingNotes' own networking.)
+- **Automerge / AutomergeRepo APIs: do NOT rely on training memory.** Both
+  packages are pre-1.0. Before writing any call, check the current docs
+  (https://automerge.org/automerge-swift,
+  https://automerge.org/automerge-repo-swift) and the MeetingNotes sample
+  (https://github.com/automerge/MeetingNotes). If unsure of a method, say
+  so and verify against the actual checked-out source.
+- Do not reinvent networking. Use `WebSocketProvider` from
+  `automerge-repo-swift` and the off-the-shelf
+  `@automerge/automerge-repo-sync-server` relay. Wrap every Repo / DocHandle
+  / provider call behind our own type so a future package bump touches one
+  place rather than the whole codebase.
 - Keep the document model logic separate from SwiftUI views.
 - Explain Automerge and CRDT/sync code as you write it — the author is learning this.
 
 ## Where we are
 
-Phase 0: the headless document model. No UI, no networking yet.
+Phase 1 is feature-complete: drawing surface, captured snapshots, unified
+pannable/zoomable field of snapshots, on-disk board library with autosave.
+Phase 2 (sync between two devices) is in progress.
 
 ## Phase roadmap
 
-0. Headless document model + load/save + round-trip test.
-1. Single-player SwiftUI canvas (draw, capture snapshot, arrange) on iPad + Mac.
-2. Sync between two devices (adapt MeetingNotes networking); test the offline/reconnect case.
+0. Headless document model + load/save + round-trip test. ✅
+1. Single-player SwiftUI canvas (draw, capture snapshot, arrange) on iPad + Mac. ✅
+2. Sync between two devices via `automerge-repo-swift` + local sync-server;
+   test the offline/reconnect case.
 3. Many people + presence channel + a sync-server hub.
 
 ## Build/run

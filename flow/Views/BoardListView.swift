@@ -92,14 +92,14 @@ struct BoardListView: View {
     // MARK: - Actions
 
     private func createBoard() {
-        do {
-            // Default name uses count rather than a Date so it's
-            // stable and predictable; rename is one tap away.
-            let name = "Untitled \(library.boards.count + 1)"
-            let summary = try library.createBoard(name: name)
-            path.append(summary.id)
-        } catch {
-            assertionFailure("createBoard failed: \(error)")
+        let name = "Untitled \(library.boards.count + 1)"
+        Task {
+            do {
+                let summary = try await library.createBoard(name: name)
+                path.append(summary.id)
+            } catch {
+                assertionFailure("createBoard failed: \(error)")
+            }
         }
     }
 }
