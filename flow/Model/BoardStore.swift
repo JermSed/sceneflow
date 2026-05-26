@@ -121,9 +121,18 @@ final class BoardStore: ObservableObject {
         try board.beginStroke(id: id, color: color, width: width)
     }
 
-    /// Append a pen sample to an in-progress stroke.
+    /// Append a pen sample to an in-progress stroke. Used by tests
+    /// and any future "live preview" affordance — `CanvasView`
+    /// itself batches points locally and ships finished strokes via
+    /// `commitStroke`.
     func appendPoint(to handle: StrokeHandle, _ point: Point) throws {
         try board.appendPoint(to: handle, point)
+    }
+
+    /// Write a finished stroke in one Automerge change. The hot
+    /// path for drawing.
+    func commitStroke(_ stroke: Stroke) throws {
+        try board.commitStroke(stroke)
     }
 
     /// Freeze the live sketch into a snapshot at `(x, y, z)` and

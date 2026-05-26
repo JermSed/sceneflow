@@ -2,42 +2,26 @@
 //  FieldView.swift
 //  flow
 //
-//  Phase 1 step #4 — the unified infinite canvas.
+//  The unified infinite canvas — Phase 1 step #4.
 //
-//  One pannable / pinch-zoomable plane that holds:
+//  One pannable / pinch-zoomable plane that holds the active sketch
+//  frame at field origin and every captured snapshot at its (x, y).
 //
-//   • the active sketch (a fixed frame anchored at field origin)
-//   • all captured snapshots at their (x, y) positions
+//  Visual language is borrowed from Figma:
 //
-//  Coordinate systems:
+//   • A neutral medium-light gray "infinite paper" backdrop, not
+//     white — so the white frames read as paper sitting on a desk.
+//   • A faint dot grid in the field's coordinate space gives the
+//     plane a sense of scale and motion when panning / zooming.
+//   • Frames have no border in their resting state. They sit on
+//     the backdrop on a small drop shadow, the way Figma frames do.
+//   • The active sketch frame gets a subtle accent-colored outline
+//     so the user can tell at a glance which one is editable.
+//   • Each frame has a small label floating above it: "Sketch" for
+//     the live area, "Snapshot 1", "Snapshot 2", … for the captures.
 //
-//   • **Field coords** — the infinite plane. Snapshot (x, y) in the
-//     doc model is in this space. The active sketch frame's top-left
-//     sits at field (0, 0).
-//   • **Screen coords** — `field * scale + pan`. The transform lives
-//     in `.scaleEffect` + `.offset` on the content ZStack.
-//   • **Sketch-local coords** — inside the active sketch frame,
-//     `(0, 0)` is the frame's top-left. Stroke points stored in the
-//     doc are in this space, NOT field space. That means moving a
-//     snapshot only changes the snapshot's (x, y); the strokes inside
-//     don't need re-translation.
-//
-//  Gestures:
-//
-//   • Drawing on the active sketch: handled by the nested `CanvasView`
-//     (its `DragGesture` reads local coordinates, so points land in
-//     sketch-local space exactly as before).
-//   • Dragging a snapshot: each tile owns a `DragGesture`. We keep
-//     a per-tile live translation in `@State` so the tile follows
-//     the finger immediately, then commit to the doc once on release
-//     (writing on every onChanged is wasteful — `moveSnapshot` is
-//     last-write-wins, so the intermediate writes are noise).
-//   • Panning the field: a `DragGesture` on a clear background layer.
-//     The active sketch and snapshot tiles are above it, so their
-//     gestures take priority where they hit.
-//   • Pinch-zoom: `MagnificationGesture` attached simultaneously to
-//     the whole field. Anchored at top-leading so the pan doesn't
-//     swim when scaling.
+//  Coordinate systems (unchanged from earlier — see ../Model for
+//  details): field coords, screen coords, sketch-local coords.
 //
 
 import SwiftUI
@@ -47,96 +31,161 @@ struct FieldView: View {
     @ObservedObject var store: BoardStore
 
     /// Logical size of the active sketch and of each snapshot tile.
-    /// Phase 1 is "every frame is the same size as the sketch" — a
-    /// future settings panel could let users vary tile dimensions.
     static let sketchSize = CGSize(width: 800, height: 600)
+
+    /// Spacing between the major dot-grid points. Picked so the
+    /// dots are visible but not noisy at scale = 1.
+    private static let gridSpacing: CGFloat = 24
+
+    /// Pixel offset of each frame's title above its top edge.
+    private static let titleHeight: CGFloat = 22
 
     // MARK: - View state
 
-    /// Committed pan, in screen-space points. Re-anchored on each
-    /// drag-end so subsequent drags add to it.
     @State private var pan: CGSize = .zero
-
-    /// In-flight pan during an active drag — kept separate so the
-    /// `onEnded` handler doesn't have to subtract anything weird.
     @State private var pendingPan: CGSize = .zero
-
-    /// Committed zoom factor.
     @State private var scale: CGFloat = 1.0
-
-    /// In-flight zoom multiplier during an active pinch.
     @State private var pendingScale: CGFloat = 1.0
-
-    /// Tracks which snapshot (if any) is being dragged and how far
-    /// it's been moved this gesture. Storing the in-flight translation
-    /// here (rather than mutating the doc on every change) keeps pen-
-    /// like-frequency writes off the CRDT hot path.
     @State private var draggingSnapshot: (id: UUID, translation: CGSize)?
-
-    /// Whether we've done the initial "center the sketch on screen"
-    /// pan. Flips true once `GeometryReader` reports the first size.
     @State private var didCenter = false
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                // Background pan target. Filling the GeometryReader
-                // gives the field its hit area — without an explicit
-                // shape, taps on empty regions wouldn't reach the
-                // pan gesture.
-                Color(white: 0.96)
+                // 1. Backdrop. Pan-gesture target so taps on empty
+                //    field pan the whole plane.
+                Color(red: 0.91, green: 0.91, blue: 0.93)
                     .contentShape(Rectangle())
                     .gesture(panGesture)
 
-                // Transformed content: sketch frame + snapshot tiles.
-                content
+                // 2. Everything that lives "on" the plane:
+                //    grid + sketch + snapshots, all transformed
+                //    together so they pan and zoom as one piece.
+                content(in: geo.size)
                     .scaleEffect(currentScale, anchor: .topLeading)
                     .offset(currentPan)
                     .allowsHitTesting(true)
             }
             .clipped()
-            // Simultaneous so the pinch works regardless of which
-            // sub-gesture is currently active.
             .simultaneousGesture(magnifyGesture)
             .onAppear { centerSketchOnce(in: geo.size) }
         }
     }
 
-    // MARK: - Content (transformed)
+    // MARK: - Transformed content
 
-    private var content: some View {
+    @ViewBuilder
+    private func content(in containerSize: CGSize) -> some View {
         ZStack(alignment: .topLeading) {
-            activeSketchFrame
-                .frame(width: Self.sketchSize.width, height: Self.sketchSize.height)
-                .offset(x: 0, y: 0)   // sketch is anchored at field origin
+            // Faint dot grid. Sized to comfortably cover any
+            // reasonable pan range; the grid is part of the plane,
+            // so we want it to extend well beyond the viewport.
+            dotGrid(size: gridCoverage(containerSize: containerSize))
+                .offset(x: gridOrigin(containerSize: containerSize).x,
+                        y: gridOrigin(containerSize: containerSize).y)
+                .allowsHitTesting(false)
 
-            ForEach(store.canvas.snapshots) { snap in
-                snapshotTile(for: snap)
-                    .frame(width: Self.sketchSize.width, height: Self.sketchSize.height)
-                    .offset(x: snap.x + draggingOffset(for: snap.id).width,
-                            y: snap.y + draggingOffset(for: snap.id).height)
-                    // .gesture (not .highPriorityGesture) so the
-                    // CanvasView's drawing gesture inside the sketch
-                    // frame still wins when the drag starts there.
-                    .gesture(dragGesture(for: snap))
+            // Active sketch frame at field origin.
+            frame(
+                title: "Sketch",
+                titleColor: .accentColor,
+                isActive: true,
+                content: { activeSketchBody }
+            )
+            .offset(x: 0, y: 0)
+
+            // Captured snapshots.
+            ForEach(Array(store.canvas.snapshots.enumerated()), id: \.element.id) { idx, snap in
+                frame(
+                    title: "Snapshot \(idx + 1)",
+                    titleColor: .secondary,
+                    isActive: false,
+                    content: { SnapshotTileView(snapshot: snap) }
+                )
+                .offset(
+                    x: snap.x + draggingOffset(for: snap.id).width,
+                    y: snap.y + draggingOffset(for: snap.id).height)
+                .gesture(dragGesture(for: snap))
             }
         }
     }
 
-    /// The active sketch — bordered so the user can see where the
-    /// drawable area ends. Inside is the existing `CanvasView`, which
-    /// already does input + render.
-    private var activeSketchFrame: some View {
-        CanvasView(store: store)
-            .background(Color.white)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.blue.opacity(0.4), lineWidth: 2))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+    /// One frame's worth of chrome: title floating above, frame
+    /// body below. Pulled out so the active sketch and snapshots
+    /// share the exact same surface treatment.
+    @ViewBuilder
+    private func frame<Body: View>(
+        title: String,
+        titleColor: Color,
+        isActive: Bool,
+        @ViewBuilder content: () -> Body
+    ) -> some View {
+        ZStack(alignment: .topLeading) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(titleColor)
+                .offset(y: -Self.titleHeight)
+
+            content()
+                .frame(width: Self.sketchSize.width, height: Self.sketchSize.height)
+                .background(Color.white)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(
+                            isActive ? Color.accentColor.opacity(0.55) : Color.black.opacity(0.06),
+                            lineWidth: isActive ? 1.5 : 0.5)
+                )
+                .shadow(color: .black.opacity(0.10),
+                        radius: isActive ? 14 : 10,
+                        x: 0, y: 4)
+        }
     }
 
-    private func snapshotTile(for snapshot: Snapshot) -> some View {
-        SnapshotTileView(snapshot: snapshot)
+    private var activeSketchBody: some View {
+        CanvasView(store: store)
+    }
+
+    // MARK: - Grid
+
+    /// Generous grid coverage so panning doesn't reveal the edge
+    /// of the dot pattern in practice. Three viewport sizes in
+    /// each direction is plenty for casual use; if the user pans
+    /// very far we'll re-center next time the view appears.
+    private func gridCoverage(containerSize: CGSize) -> CGSize {
+        CGSize(
+            width: max(containerSize.width * 6, Self.sketchSize.width * 8),
+            height: max(containerSize.height * 6, Self.sketchSize.height * 8))
+    }
+
+    private func gridOrigin(containerSize: CGSize) -> CGPoint {
+        let coverage = gridCoverage(containerSize: containerSize)
+        return CGPoint(
+            x: -coverage.width / 2 + Self.sketchSize.width / 2,
+            y: -coverage.height / 2 + Self.sketchSize.height / 2)
+    }
+
+    private func dotGrid(size: CGSize) -> some View {
+        Canvas { ctx, _ in
+            let spacing = Self.gridSpacing
+            // Dot color tuned to be subtly visible against the
+            // backdrop without competing with frames.
+            let dotColor = Color(white: 0.78)
+            let radius: CGFloat = 0.9
+            var x: CGFloat = 0
+            while x < size.width {
+                var y: CGFloat = 0
+                while y < size.height {
+                    let rect = CGRect(
+                        x: x - radius, y: y - radius,
+                        width: radius * 2, height: radius * 2)
+                    ctx.fill(Path(ellipseIn: rect), with: .color(dotColor))
+                    y += spacing
+                }
+                x += spacing
+            }
+        }
+        .frame(width: size.width, height: size.height)
     }
 
     // MARK: - Gestures
@@ -152,8 +201,6 @@ struct FieldView: View {
         guard let dragging = draggingSnapshot, dragging.id == id else {
             return .zero
         }
-        // Translation arrives in screen-space; convert to field-space
-        // so the tile tracks the finger 1:1 when zoomed.
         return CGSize(
             width: dragging.translation.width / currentScale,
             height: dragging.translation.height / currentScale)
@@ -184,8 +231,7 @@ struct FieldView: View {
     }
 
     /// Hard-clamp zoom so the user can't pinch into oblivion or
-    /// invert the canvas. Values picked to feel right on iPad —
-    /// half-size up to 4× is enough range for arranging.
+    /// invert the canvas. Half-size up to 4× is plenty for arranging.
     private func clampScale(_ s: CGFloat) -> CGFloat {
         max(0.25, min(4.0, s))
     }
@@ -196,8 +242,6 @@ struct FieldView: View {
                 draggingSnapshot = (snapshot.id, value.translation)
             }
             .onEnded { value in
-                // Apply the screen-space translation back through the
-                // current zoom to get the field-space delta.
                 let dx = value.translation.width / currentScale
                 let dy = value.translation.height / currentScale
                 do {
@@ -214,10 +258,6 @@ struct FieldView: View {
 
     // MARK: - Initial framing
 
-    /// Center the sketch frame the first time we know how big our
-    /// container is. Wrapping in `didCenter` so it doesn't re-run on
-    /// every rotation / size change (subsequent layouts would yank
-    /// the user's pan).
     private func centerSketchOnce(in size: CGSize) {
         guard !didCenter else { return }
         didCenter = true
@@ -229,10 +269,9 @@ struct FieldView: View {
 
 // MARK: - Snapshot tile
 
-/// Renders a frozen snapshot's strokes inside a tile the same size as
-/// the active sketch frame. Visually distinguished from the active
-/// frame with a gray border (vs the active frame's blue border) so
-/// the user can tell which one is currently editable.
+/// Renders a frozen snapshot's strokes. The framing chrome (border,
+/// shadow, title) is provided by `FieldView.frame`, so this view
+/// just paints the strokes onto a transparent canvas.
 private struct SnapshotTileView: View {
     let snapshot: Snapshot
 
@@ -250,19 +289,14 @@ private struct SnapshotTileView: View {
                         lineJoin: .round))
             }
         }
-        .background(Color.white)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.gray.opacity(0.4), lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     /// Same midpoint-quadratic smoothing used by `CanvasView`.
     /// Duplicated rather than shared because pulling it into a
-    /// helper file would mean two render call sites importing it —
-    /// when the live and frozen renderers diverge (variable width,
-    /// pressure-aware shading), keeping them separate makes that
-    /// easy. Revisit if a third caller appears.
+    /// helper file would mean two render call sites importing it
+    /// — when the live and frozen renderers diverge (variable
+    /// width, pressure-aware shading), keeping them separate makes
+    /// that easy. Revisit if a third caller appears.
     private func strokePath(for points: [Point]) -> Path {
         var path = Path()
         guard let first = points.first else { return path }

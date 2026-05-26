@@ -43,7 +43,7 @@ struct flowApp: App {
 
     // MARK: - URL handling
 
-    /// Accepts `sceneflow://board/<documentIdString>` URLs.
+    /// Accepts `sceneflow://board/<documentIdString>?name=<title>` URLs.
     ///
     /// Anything else is dropped silently — the OS only routes URLs
     /// of schemes we registered in Info.plist, so we shouldn't see
@@ -61,12 +61,23 @@ struct flowApp: App {
         let docIdString = path[1]
         guard let docId = DocumentId(docIdString) else { return }
 
+        // The sender includes their local title as `?name=…` so the
+        // joined-side row reads "<title> - shared" instead of an
+        // anonymous "Shared board". Fall back gracefully if the
+        // query is missing (older shares, hand-typed URLs).
+        let senderName = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first(where: { $0.name == "name" })?
+            .value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let joinedName = (senderName?.isEmpty == false ? "\(senderName!) - shared" : "Shared board")
+
         pendingJoin = PendingJoin(documentId: docId, status: .joining)
         Task {
             do {
                 _ = try await library.joinBoard(
                     documentId: docId,
-                    name: "Shared board")
+                    name: joinedName)
                 pendingJoin = PendingJoin(documentId: docId, status: .joined)
                 // Clear the banner after a beat so it doesn't linger.
                 try? await Task.sleep(for: .seconds(2))

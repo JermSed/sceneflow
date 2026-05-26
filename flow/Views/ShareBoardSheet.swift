@@ -25,11 +25,20 @@ struct ShareBoardSheet: View {
     @State private var didCopy = false
 
     private var shareURL: URL {
-        // sceneflow://board/<documentIdString>
+        // sceneflow://board/<documentIdString>?name=<encoded>
         // We use a custom URL scheme rather than universal links so
         // sharing works without DNS / Associated-Domains setup. The
         // bs58 documentId is already URL-safe (no slashes etc).
-        URL(string: "sceneflow://board/\(summary.documentIdString)")!
+        // The name is a hint the receiver uses for its local label
+        // ("<sender's name> - shared") — it isn't authoritative
+        // (the board's actual content is the CRDT), but it's much
+        // friendlier than the bs58 id when the joiner sees the row.
+        var components = URLComponents()
+        components.scheme = "sceneflow"
+        components.host = "board"
+        components.path = "/\(summary.documentIdString)"
+        components.queryItems = [URLQueryItem(name: "name", value: summary.name)]
+        return components.url!
     }
 
     var body: some View {

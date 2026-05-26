@@ -177,12 +177,31 @@ final class BoardDocument {
 
     /// Append a single pen sample to the stroke identified by `handle`.
     /// Hot path: keep this tight.
+    ///
+    /// Kept around for tests and any future "stream a stroke live"
+    /// affordance (e.g. presence-channel hover-preview). Real drawing
+    /// uses `commitStroke` so we only emit one Automerge change per
+    /// stroke — see CLAUDE.md: *batch pen points into a stroke; never
+    /// write one Automerge change per pen point.*
     func appendPoint(to handle: StrokeHandle, _ point: Point) throws {
         let endIndex = doc.length(obj: handle.pointsId)
         let pointMap = try doc.insertObject(obj: handle.pointsId, index: endIndex, ty: .Map)
         try doc.put(obj: pointMap, key: "x", value: .F64(point.x))
         try doc.put(obj: pointMap, key: "y", value: .F64(point.y))
         try doc.put(obj: pointMap, key: "pressure", value: .F64(point.pressure))
+    }
+
+    /// Write a finished stroke into the active sketch in one go.
+    ///
+    /// This is what real drawing uses. The whole stroke — id, color,
+    /// width, and every point — becomes a single Automerge change.
+    /// That keeps the change-log compact, keeps the SwiftUI render
+    /// loop from re-decoding the entire doc per pen sample, and
+    /// (under sync) keeps peers from being chatted at 60Hz.
+    func commitStroke(_ stroke: Stroke) throws {
+        let strokesList = try activeStrokesId()
+        let endIndex = doc.length(obj: strokesList)
+        try writeStroke(into: strokesList, at: endIndex, stroke: stroke)
     }
 
     /// Freeze the live sketch into a new snapshot placed at `(x, y, z)`

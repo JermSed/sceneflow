@@ -2,40 +2,34 @@
 //  CanvasView.swift
 //  flow
 //
-//  The live drawing surface — Phase 1 step #3.
+//  The live drawing surface.
 //
-//  This is the only place in the app where pen / touch input flows
-//  into the document. The view does three things:
+//  Pen samples are buffered locally in `@State` while the user is
+//  drawing, and the finished stroke is committed to the document in
+//  ONE Automerge change on release. This matters for two reasons
+//  CLAUDE.md is explicit about:
 //
-//   1. Render every stroke in `store.canvas.activeSketch.strokes`
-//      using SwiftUI's `Canvas`.
-//   2. Translate the user's drag into a sequence of
-//      `BoardStore.beginStroke` + `appendPoint` calls.
-//   3. Reset its in-progress stroke handle when the drag ends, so the
-//      next drag opens a new stroke.
+//    1. The CRDT change log stays compact — one change per stroke,
+//       not 60+ per stroke.
+//    2. SwiftUI re-decodes the whole `CanvasDoc` on every
+//       `objectDidChange` from the underlying `Automerge.Document`.
+//       Doing that 60–120× per second per stroke is what made
+//       drawing feel laggy. Buffering moves the hot path entirely
+//       into local `@State`, which is essentially free.
+//
+//  Under sync, this also means peers see strokes appear when the
+//  pen lifts rather than streaming them sample-by-sample. That's
+//  acceptable for the MVP collaboration story — live cursor /
+//  in-progress-stroke previews belong on the *presence* channel
+//  (Phase 3), not the CRDT doc itself.
 //
 //  Things this view explicitly does NOT do (yet):
 //
-//   • Snapshot rendering / the spatial field — that's Phase 1 step #4.
-//   • Pan and zoom — also step #4.
 //   • Pencil pressure / tilt — `DragGesture` doesn't expose force.
-//     We capture `pressure = 0.5` for every sample so the data shape
-//     stays right; switching to UIKit's `UIPanGestureRecognizer` (via
-//     `UIViewRepresentable`) to get coalesced touches with `.force`
+//     Pressure is stored as 0.5; switching to UIKit's
+//     `UIPanGestureRecognizer` for coalesced touches with `.force`
 //     is a self-contained follow-up that won't change the doc model.
-//   • Stroke smoothing — straight line segments between samples are
-//     jagged at slow pen speeds. A quadratic Bezier through midpoints
-//     is the standard fix; defer until we have real input rates.
-//   • Color / width pickers — hardcoded black @ 2.5pt for Phase 1.
-//
-//  Performance note:
-//
-//   `store.canvas` republishes on every appended point, so this view's
-//   body recomputes 60–120× / sec while drawing. The `Canvas` itself
-//   redraws fully each time (it doesn't diff paths). That's fine for
-//   small docs; if it becomes a bottleneck we'll either subscribe to
-//   Automerge patches and maintain a CGPath cache, or split the live
-//   stroke into its own view so only it invalidates per-sample.
+//   • Color / width pickers — hardcoded near-black @ 2.5pt.
 //
 
 import SwiftUI
@@ -44,8 +38,18 @@ struct CanvasView: View {
 
     @ObservedObject var store: BoardStore
 
-    /// Handle for the stroke currently being drawn. `nil` between drags.
-    @State private var currentStroke: StrokeHandle?
+    /// In-flight stroke points, in sketch-local coordinates.
+    /// Lives in `@State` so SwiftUI invalidates the body when it
+    /// grows — but the doc isn't touched until release.
+    @State private var inProgressPoints: [Point] = []
+
+    /// The id we minted for the stroke we just committed. We hold
+    /// onto it (and onto `inProgressPoints`) until that stroke
+    /// shows up in `store.canvas` — otherwise there's a one-runloop
+    /// gap between "we cleared the local buffer" and "the doc-derived
+    /// canvas reflects the new stroke" where the stroke isn't drawn
+    /// from either source and the user sees it flash out and back in.
+    @State private var pendingStrokeId: UUID?
 
     /// Hardcoded for Phase 1 — pickers come later.
     private let defaultColor: UInt32 = 0x111111FF  // near-black
@@ -53,89 +57,121 @@ struct CanvasView: View {
 
     var body: some View {
         Canvas { ctx, _ in
+            // 1. Already-committed strokes from the doc.
             for stroke in store.canvas.activeSketch.strokes {
                 guard !stroke.points.isEmpty else { continue }
-                let path = Self.path(for: stroke.points)
                 ctx.stroke(
-                    path,
+                    Self.path(for: stroke.points),
                     with: .color(Color(rgba: stroke.color)),
-                    style: StrokeStyle(
-                        lineWidth: stroke.width,
-                        lineCap: .round,
-                        lineJoin: .round))
+                    style: Self.strokeStyle(width: stroke.width))
+            }
+            // 2. The stroke the user is drawing right now (or just
+            //    finished drawing, if the commit hasn't propagated
+            //    through the @Published canvas yet). Rendered from
+            //    the local buffer with the same style as committed
+            //    strokes so the handoff is invisible.
+            //
+            //    `showLiveOverlay` ensures we don't double-draw
+            //    once the doc-derived canvas already includes the
+            //    same stroke.
+            if showLiveOverlay, !inProgressPoints.isEmpty {
+                ctx.stroke(
+                    Self.path(for: inProgressPoints),
+                    with: .color(Color(rgba: defaultColor)),
+                    style: Self.strokeStyle(width: defaultWidth))
             }
         }
-        // A near-white background so the canvas reads as "paper" rather
-        // than blending into the surrounding chrome. Also makes the
-        // hit area for the drag gesture obvious to the OS.
-        .background(Color(white: 0.99))
+        // The frame chrome (white paper background, border, shadow)
+        // lives in FieldView so we render onto a transparent canvas
+        // here. Still need an explicit hit-test shape so the drag
+        // gesture catches taps in empty regions of the sketch.
+        .contentShape(Rectangle())
         .gesture(dragGesture)
-        // If the user navigates away mid-stroke, drop the handle so
-        // returning starts cleanly. (This is also why `currentStroke`
-        // lives in `@State` rather than `@GestureState` — we want it
-        // to survive a quick re-render but get torn down on disappear.)
-        .onDisappear { currentStroke = nil }
+        // When the just-committed stroke lands in the doc-derived
+        // canvas, drop the local buffer. We key this on stroke
+        // count rather than identity equality so it's cheap.
+        .onChange(of: store.canvas.activeSketch.strokes.count) {
+            if let id = pendingStrokeId,
+               store.canvas.activeSketch.strokes.contains(where: { $0.id == id }) {
+                inProgressPoints = []
+                pendingStrokeId = nil
+            }
+        }
+        // Pen down outside the view bounds, lift outside → drag
+        // cancellation doesn't fire onEnded reliably; clear local
+        // state on disappear so a half-finished buffer doesn't
+        // carry into the next session.
+        .onDisappear {
+            inProgressPoints = []
+            pendingStrokeId = nil
+        }
+    }
+
+    /// Whether the local in-progress buffer should be drawn on top
+    /// of the doc-derived canvas. During the drag itself
+    /// `pendingStrokeId` is nil and we always draw. After commit
+    /// we keep drawing until the doc reflects the new stroke; once
+    /// it does, we suppress the overlay so we don't render the
+    /// same stroke twice in the same frame.
+    private var showLiveOverlay: Bool {
+        guard let id = pendingStrokeId else { return true }
+        return !store.canvas.activeSketch.strokes.contains(where: { $0.id == id })
     }
 
     // MARK: - Gesture
 
-    /// `minimumDistance: 0` so a single tap starts (and ends) a stroke
-    /// — without that, dotting an i requires a tiny drag.
+    /// `minimumDistance: 0` so a single tap leaves a visible dot
+    /// — otherwise dotting an i requires a tiny drag.
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                handleDragChange(at: value.location)
+                inProgressPoints.append(Point(
+                    x: Double(value.location.x),
+                    y: Double(value.location.y),
+                    pressure: 0.5))
             }
             .onEnded { _ in
-                currentStroke = nil
+                commitInProgressStroke()
             }
     }
 
-    private func handleDragChange(at location: CGPoint) {
+    private func commitInProgressStroke() {
+        guard !inProgressPoints.isEmpty else { return }
+        let id = UUID()
+        let stroke = Stroke(
+            id: id,
+            color: defaultColor,
+            width: defaultWidth,
+            points: inProgressPoints)
         do {
-            // First sample of a new stroke → allocate a stroke in the
-            // doc and cache its handle. Subsequent samples reuse it
-            // (cheap; no tree walk).
-            if currentStroke == nil {
-                currentStroke = try store.beginStroke(
-                    color: defaultColor, width: defaultWidth)
-            }
-            guard let handle = currentStroke else { return }
-            try store.appendPoint(
-                to: handle,
-                Point(x: Double(location.x),
-                      y: Double(location.y),
-                      pressure: 0.5))
+            try store.commitStroke(stroke)
+            // Hold onto inProgressPoints; .onChange below will clear
+            // them once the doc-derived canvas catches up. That's
+            // what makes the handoff visually seamless.
+            pendingStrokeId = id
         } catch {
-            assertionFailure("CanvasView drag failed: \(error)")
-            currentStroke = nil
+            // A commit failure here means the Automerge doc itself
+            // refused the write — almost certainly a programming
+            // error, not a runtime condition we can recover from.
+            // Drop the buffer so the next stroke starts clean.
+            assertionFailure("commitStroke failed: \(error)")
+            inProgressPoints = []
         }
     }
 
     // MARK: - Path building
 
-    /// Build a smoothed `Path` from a stroke's points.
+    /// Build a smoothed `Path` from a sequence of points.
     ///
     /// Algorithm: quadratic Bezier through midpoints, with the
     /// sampled points as control points. The rendered curve passes
     /// through the midpoint of each consecutive pair of samples
     /// rather than through the samples themselves, and the samples
-    /// "round off" the corner. Continuity is C1 (tangents match at
-    /// each midpoint) which is what reads as "smooth" to the eye.
+    /// "round off" the corner. C1-continuous, which is what reads
+    /// as "smooth" to the eye.
     ///
-    ///                p1 (control)
-    ///                  *
-    ///                 / \
-    ///                /   \
-    ///   p0 ───→ m01 \   / m12 ───→ p2
-    ///                \─/
-    ///                 X (curve passes here, not through p1)
-    ///
-    /// Cheap (one quad curve per sample), no extra deps, works fine
-    /// at typical pen sample rates. If a stroke is only 1 or 2
-    /// points we degenerate to a dot or a line — `Canvas.stroke`
-    /// won't render a single-point path so the 1-point case adds a
-    /// hair-line so a tap leaves a visible mark.
+    /// Cheap, no extra deps. Degenerate cases (1 / 2 points) draw
+    /// a dot / line so a tap or short flick still leaves a mark.
     private static func path(for points: [Point]) -> Path {
         var path = Path()
         guard let first = points.first else { return path }
@@ -143,7 +179,6 @@ struct CanvasView: View {
         path.move(to: p0)
 
         if points.count == 1 {
-            // Single tap → tiny segment so `stroke` actually paints.
             path.addLine(to: CGPoint(x: p0.x + 0.01, y: p0.y))
             return path
         }
@@ -153,10 +188,6 @@ struct CanvasView: View {
             return path
         }
 
-        // 3+ points: line from p[0] to the first midpoint, then
-        // quad curves through subsequent midpoints with samples as
-        // controls, then a final line into the last actual sample
-        // so the stroke ends exactly where the pen lifted.
         let firstMid = Self.midpoint(
             CGPoint(x: points[0].x, y: points[0].y),
             CGPoint(x: points[1].x, y: points[1].y))
@@ -178,14 +209,17 @@ struct CanvasView: View {
     private static func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
         CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
     }
+
+    private static func strokeStyle(width: Double) -> StrokeStyle {
+        StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
+    }
 }
 
 // MARK: - Color packing
 
 extension Color {
-    /// Unpack a 0xRRGGBBAA color (the form we store in Automerge) into
-    /// a SwiftUI `Color`. Kept in this file because it's only used by
-    /// the render path; if a second caller appears, hoist it.
+    /// Unpack a 0xRRGGBBAA color (the form we store in Automerge)
+    /// into a SwiftUI `Color`.
     init(rgba: UInt32) {
         let r = Double((rgba >> 24) & 0xFF) / 255.0
         let g = Double((rgba >> 16) & 0xFF) / 255.0
