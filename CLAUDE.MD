@@ -46,22 +46,35 @@ One Automerge document per board, shaped as a tree of maps and lists:
 ```
 root
 ├── snapshots: [ Snapshot ]                 // the spatial field of captured frames
-│     └── Snapshot { id, x, y, z, strokes }  // strokes are FROZEN at capture time
-└── activeSketch
-      └── strokes: [ Stroke ]                // the one live, co-edited drawing surface
-            └── Stroke { id, color, width, points: [Point] }
-                  └── Point { x, y, pressure }
+│     └── Snapshot { id, x, y, z, strokes }  // editable; strokes list is open to edits
+├── activeSketch                            // the live, co-edited scratchpad
+│     └── strokes: [ Stroke ]
+│           └── Stroke { id, color, width, points: [Point] }
+│                 └── Point { x, y, pressure }
+├── texts: [ TextNote ]                     // free-floating text comments
+│     └── TextNote { id, x, y, z, text, fontSize, color }
+└── images: [ ImageNote ]                   // pasted / dropped images
+      └── ImageNote { id, x, y, z, width, height, data, format }
 ```
 
 Matching Swift domain types:
 
 ```swift
-struct CanvasDoc { var snapshots: [Snapshot]; var activeSketch: Sketch }
+struct CanvasDoc { var snapshots: [Snapshot]; var activeSketch: Sketch; var texts: [TextNote] = []; var images: [ImageNote] = [] }
 struct Snapshot: Identifiable { let id: UUID; var x, y: Double; var z: Int; var strokes: [Stroke] }
 struct Sketch { var strokes: [Stroke] }
 struct Stroke: Identifiable { let id: UUID; var color: UInt32; var width: Double; var points: [Point] }
 struct Point { var x, y, pressure: Double }
+struct TextNote: Identifiable { let id: UUID; var x, y: Double; var z: Int; var text: String; var fontSize: Double; var color: UInt32 }
+struct ImageNote: Identifiable { let id: UUID; var x, y: Double; var z: Int; var width, height: Double; var data: Data; var format: String }
 ```
+
+`texts` and `images` are forward-compat additions: boards saved
+before they existed seed empty lists on open (`BoardDocument.
+init(adopting:)`), so decoding old bytes still succeeds. Image
+bytes live in the doc and ship through sync — `ImageImport` does
+a downscale + JPEG/PNG re-encode on insert to keep payloads
+manageable.
 
 Design rules baked into this model:
 - Strokes and points are append-only lists → concurrent drawing merges cleanly.
