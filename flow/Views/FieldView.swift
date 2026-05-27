@@ -100,6 +100,19 @@ struct FieldView: View {
     /// from a button handler.
     @State private var containerSize: CGSize = .zero
 
+    /// Where (in field coords) the active sketch frame's top-left
+    /// is rendered. View state, not doc state — each peer chooses
+    /// where to anchor their own sketch view. Strokes are still
+    /// stored in sketch-local coords, so peers see the same content
+    /// even when their sketch frames are at different field
+    /// positions.
+    ///
+    /// Initial value `(.nan, .nan)` is the sentinel "no position
+    /// chosen yet" — when the user taps "+" we replace it with
+    /// the current viewport center. We avoid `nil`/Optional here
+    /// to keep the `.offset(x:y:)` math straightforward.
+    @State private var sketchPosition: CGPoint = .zero
+
     var body: some View {
         GeometryReader { geo in
             ZStack {
@@ -162,7 +175,19 @@ struct FieldView: View {
         // active sketch loaded from disk does NOT auto-open.
         .onChange(of: store.canvas.activeSketch.strokes.count) { old, new in
             if old == 0, new > 0, !sketchOpenedLocally {
+                // Place the sketch at our viewport center too so
+                // we actually see what the peer is drawing.
+                sketchPosition = topLeftCenteredOnViewport()
                 sketchOpenedLocally = true
+            }
+        }
+        // When the user taps "+" we want the sketch to appear
+        // wherever they're currently looking, not stuck at the
+        // field origin. Watch the flag and snap the sketch into
+        // place the moment it flips on.
+        .onChange(of: sketchOpenedLocally) { old, new in
+            if !old, new {
+                sketchPosition = topLeftCenteredOnViewport()
             }
         }
         // Toolbar Capture button hand-off. The parent sets
@@ -178,29 +203,17 @@ struct FieldView: View {
         }
     }
 
-    /// Place a new snapshot so it's visually centered on where
-    /// the user is currently looking. Computed by inverting the
-    /// view transform: `field = (screen - pan) / scale`, then
-    /// offsetting by half the tile so the placement is the tile's
-    /// top-left rather than its center.
+    /// Capture the sketch in place — the new snapshot lands at
+    /// the sketch's current `sketchPosition`, so visually the
+    /// sketch frame transforms into a snapshot without jumping.
     private func performCaptureAtViewportCenter() {
         guard !store.canvas.activeSketch.strokes.isEmpty else { return }
-
-        let screenCenter = CGPoint(
-            x: containerSize.width / 2,
-            y: containerSize.height / 2)
-        let fieldCenter = CGPoint(
-            x: (screenCenter.x - currentPan.width) / currentScale,
-            y: (screenCenter.y - currentPan.height) / currentScale)
-        let topLeft = CGPoint(
-            x: fieldCenter.x - Self.sketchSize.width / 2,
-            y: fieldCenter.y - Self.sketchSize.height / 2)
 
         let z = store.canvas.snapshots.count
         do {
             _ = try store.captureSnapshot(
-                at: Double(topLeft.x),
-                y: Double(topLeft.y),
+                at: Double(sketchPosition.x),
+                y: Double(sketchPosition.y),
                 z: z)
             // Capture cleared the active sketch; close the local
             // reveal so the field returns to "snapshots only".
@@ -208,6 +221,28 @@ struct FieldView: View {
         } catch {
             assertionFailure("capture failed: \(error)")
         }
+    }
+
+    /// Compute the top-left of a `sketchSize`d frame so that the
+    /// frame is centered on the current viewport. Used by both
+    /// "+" (to place the sketch at viewport center) and the
+    /// auto-reveal path (to make sure incoming peer drawings
+    /// show up where the local user is actually looking).
+    ///
+    /// Math: invert the field's view transform. The viewport
+    /// center in field coords is `(screen_center - pan) / scale`;
+    /// shift by half the tile so what we return is the frame's
+    /// top-left, which is what `.offset(x:y:)` expects.
+    private func topLeftCenteredOnViewport() -> CGPoint {
+        let screenCenter = CGPoint(
+            x: containerSize.width / 2,
+            y: containerSize.height / 2)
+        let fieldCenter = CGPoint(
+            x: (screenCenter.x - currentPan.width) / currentScale,
+            y: (screenCenter.y - currentPan.height) / currentScale)
+        return CGPoint(
+            x: fieldCenter.x - Self.sketchSize.width / 2,
+            y: fieldCenter.y - Self.sketchSize.height / 2)
     }
 
     /// Single source of truth for "is the active sketch on screen
@@ -244,10 +279,14 @@ struct FieldView: View {
                         y: gridOrigin(containerSize: containerSize).y)
                 .allowsHitTesting(false)
 
-            // Active sketch frame at field origin. Shown when:
+            // Active sketch frame at the user's chosen position.
+            // Shown when:
             //  • the user opened it locally with "+", OR
             //  • the doc says the active sketch has strokes
             //    (someone else is mid-draw — keep collab live).
+            //
+            // `sketchPosition` is view state only — set to the
+            // current viewport center when the user taps "+".
             if isSketchVisible {
                 frame(
                     title: "Sketch",
@@ -255,7 +294,7 @@ struct FieldView: View {
                     isActive: true,
                     content: { activeSketchBody }
                 )
-                .offset(x: 0, y: 0)
+                .offset(x: sketchPosition.x, y: sketchPosition.y)
             }
 
             // Captured snapshots.
@@ -392,15 +431,23 @@ struct FieldView: View {
                 .shadow(color: .black.opacity(0.10),
                         radius: isEditing ? 14 : 10,
                         x: 0, y: 4)
-                .onTapGesture {
-                    // Tap toggles edit mode for this snapshot.
-                    // Tap-to-deselect is the Done button's job.
-                    if !isEditing {
-                        editingSnapshotId = snapshot.id
-                    }
-                }
-                .gesture(isEditing ? nil : dragGesture(for: snapshot))
         }
+        // Hit area = the whole ZStack (title + body). Without
+        // this, clicks on the title row — which sits ~22pt above
+        // the body but is visually part of the snapshot — used
+        // to fall through to the field's pan gesture, so a drag
+        // started on what looked like the snapshot was actually
+        // a pan and the tile appeared to fly off as the whole
+        // field panned underneath it.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // Tap enters edit mode. Tap-to-deselect is the Done
+            // button's job.
+            if !isEditing { editingSnapshotId = snapshot.id }
+        }
+        // Move-by-drag only in view mode. In edit mode the drag
+        // belongs to the drawing surface inside the tile.
+        .gesture(isEditing ? nil : dragGesture(for: snapshot))
     }
 
     @ViewBuilder
