@@ -55,6 +55,10 @@ struct BoardOpenView: View {
     /// toolbar's text button; ESC cancels.
     @State private var isPlacingText: Bool = false
 
+    /// Same modal-tool pattern for placing a comment pin. The
+    /// two are mutually exclusive — arming one disarms the other.
+    @State private var isPlacingComment: Bool = false
+
     var body: some View {
         Group {
             if let store, let summary = library.boards.first(where: { $0.id == boardId }) {
@@ -70,7 +74,8 @@ struct BoardOpenView: View {
                         captureRequest: $captureRequest,
                         addTextRequest: $addTextRequest,
                         addImageRequest: $addImageRequest,
-                        isPlacingText: $isPlacingText)
+                        isPlacingText: $isPlacingText,
+                        isPlacingComment: $isPlacingComment)
 
                     // Slim banner that drops down from the top of
                     // the board when the sync socket isn't ready.
@@ -254,11 +259,9 @@ struct BoardOpenView: View {
 
         ToolbarItem(placement: .primaryAction) {
             // Figma-style placement: arm the tool, then the next
-            // click in the field places + enters edit mode. The
-            // button stays "on" until the user taps it again or
-            // hits ESC, so multiple text notes can be placed in
-            // a row without re-tapping.
+            // click in the field places + enters edit mode.
             Button {
+                if isPlacingComment { isPlacingComment = false }
                 isPlacingText.toggle()
             } label: {
                 Image(systemName: "textformat")
@@ -270,6 +273,25 @@ struct BoardOpenView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(isPlacingText ? "Cancel placing text" : "Place text")
+        }
+
+        ToolbarItem(placement: .primaryAction) {
+            // Comment-placement tool — same modal pattern as
+            // text. Mutually exclusive with text so the user
+            // doesn't accidentally drop one wanting the other.
+            Button {
+                if isPlacingText { isPlacingText = false }
+                isPlacingComment.toggle()
+            } label: {
+                Image(systemName: "text.bubble")
+                    .foregroundStyle(isPlacingComment ? Color.white : Color.primary)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(isPlacingComment ? Color.accentColor : Color.clear))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isPlacingComment ? "Cancel placing comment" : "Place comment")
         }
 
         ToolbarItem(placement: .primaryAction) {

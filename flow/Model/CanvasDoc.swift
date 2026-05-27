@@ -103,21 +103,50 @@ struct ImageNote: Codable, Hashable, Identifiable, Sendable {
     var format: String   // "png" | "jpeg"
 }
 
+/// A Figma-style comment pin anchored at a field position.
+/// Different from `TextNote` because comments carry author +
+/// timestamp + resolved state — they're discussion artifacts,
+/// not typography. A future version will grow a `replies` list
+/// for threaded conversations; for the MVP one comment per pin.
+///
+/// Resolution is a simple boolean — last-write-wins under
+/// Automerge. That's a feature: if two people race to resolve
+/// the same comment, the resolved-state converges; nobody loses
+/// "ownership" of the thread.
+struct Comment: Codable, Hashable, Identifiable, Sendable {
+    let id: UUID
+    var x: Double
+    var y: Double
+    var z: Int
+    /// Stable peer id of the comment's author (the value of
+    /// `repo.peerId` on the device that placed it).
+    var authorPeerId: String
+    /// Display name at the time of authoring — captured here
+    /// (rather than looked up from presence at render time) so
+    /// the comment survives the author logging off.
+    var authorName: String
+    var text: String
+    var createdAt: Date
+    var isResolved: Bool
+}
+
 /// The root of a board's Automerge document.
 ///
-/// New top-level lists (`texts`, `images`) default to empty so
-/// boards saved before they existed still decode. The on-disk
-/// adopt path also seeds the underlying Automerge lists when
-/// they're absent — see `BoardDocument.init(adopting:)`.
+/// New top-level lists (`texts`, `images`, `comments`) default
+/// to empty so boards saved before they existed still decode.
+/// The on-disk adopt path also seeds the underlying Automerge
+/// lists when they're absent — see `BoardDocument.init(adopting:)`.
 struct CanvasDoc: Codable, Hashable, Sendable {
     var snapshots: [Snapshot]
     var activeSketch: Sketch
     var texts: [TextNote] = []
     var images: [ImageNote] = []
+    var comments: [Comment] = []
 
     static let empty = CanvasDoc(
         snapshots: [],
         activeSketch: .empty,
         texts: [],
-        images: [])
+        images: [],
+        comments: [])
 }

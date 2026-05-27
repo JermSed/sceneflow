@@ -48,6 +48,11 @@ enum UndoableAction: Sendable {
     case imageAdded(ImageNote)
     case imageRemoved(ImageNote)
     case imageMoved(id: UUID, from: CGPoint, to: CGPoint)
+    case commentAdded(Comment)
+    case commentRemoved(Comment)
+    case commentMoved(id: UUID, from: CGPoint, to: CGPoint)
+    case commentTextEdited(id: UUID, oldText: String, newText: String)
+    case commentResolutionToggled(id: UUID, oldValue: Bool, newValue: Bool)
 }
 
 @MainActor
@@ -301,6 +306,60 @@ final class BoardStore: ObservableObject {
         if let removed { push(.imageRemoved(removed)) }
     }
 
+    // MARK: - Comments
+
+    @discardableResult
+    func addComment(at x: Double, y: Double,
+                    authorPeerId: String, authorName: String,
+                    text: String = "") throws -> Comment {
+        let comment = Comment(
+            id: UUID(),
+            x: x, y: y,
+            z: canvas.comments.count,
+            authorPeerId: authorPeerId,
+            authorName: authorName,
+            text: text,
+            createdAt: .now,
+            isResolved: false)
+        try board.addComment(comment)
+        refresh()
+        push(.commentAdded(comment))
+        return comment
+    }
+
+    func updateCommentText(id: UUID, to newText: String) throws {
+        guard let old = canvas.comments.first(where: { $0.id == id }) else { return }
+        guard old.text != newText else { return }
+        try board.updateCommentText(id: id, text: newText)
+        refresh()
+        push(.commentTextEdited(id: id, oldText: old.text, newText: newText))
+    }
+
+    func toggleCommentResolution(id: UUID) throws {
+        guard let comment = canvas.comments.first(where: { $0.id == id }) else { return }
+        let newValue = !comment.isResolved
+        try board.setCommentResolved(id: id, resolved: newValue)
+        refresh()
+        push(.commentResolutionToggled(id: id, oldValue: comment.isResolved, newValue: newValue))
+    }
+
+    func moveComment(id: UUID, to x: Double, y: Double) throws {
+        let from = canvas.comments.first(where: { $0.id == id })
+            .map { CGPoint(x: $0.x, y: $0.y) }
+        try board.moveComment(id: id, to: x, y: y)
+        refresh()
+        if let from {
+            push(.commentMoved(id: id, from: from, to: CGPoint(x: x, y: y)))
+        }
+    }
+
+    func removeComment(id: UUID) throws {
+        let removed = canvas.comments.first(where: { $0.id == id })
+        try board.removeComment(id: id)
+        refresh()
+        if let removed { push(.commentRemoved(removed)) }
+    }
+
     func moveSnapshot(id: UUID, to x: Double, y: Double) throws {
         let from = canvas.snapshots.first(where: { $0.id == id })
             .map { CGPoint(x: $0.x, y: $0.y) }
@@ -384,6 +443,16 @@ final class BoardStore: ObservableObject {
                 try board.removeImage(id: note.id)
             case .imageMoved(let id, _, let to):
                 try board.moveImage(id: id, to: to.x, y: to.y)
+            case .commentAdded(let comment):
+                try board.addComment(comment)
+            case .commentRemoved(let comment):
+                try board.removeComment(id: comment.id)
+            case .commentMoved(let id, _, let to):
+                try board.moveComment(id: id, to: to.x, y: to.y)
+            case .commentTextEdited(let id, _, let newText):
+                try board.updateCommentText(id: id, text: newText)
+            case .commentResolutionToggled(let id, _, let newValue):
+                try board.setCommentResolved(id: id, resolved: newValue)
             }
         } catch {
             assertionFailure("redo failed: \(error)")
@@ -419,6 +488,16 @@ final class BoardStore: ObservableObject {
                 try board.addImage(note)
             case .imageMoved(let id, let from, _):
                 try board.moveImage(id: id, to: from.x, y: from.y)
+            case .commentAdded(let comment):
+                try board.removeComment(id: comment.id)
+            case .commentRemoved(let comment):
+                try board.addComment(comment)
+            case .commentMoved(let id, let from, _):
+                try board.moveComment(id: id, to: from.x, y: from.y)
+            case .commentTextEdited(let id, let oldText, _):
+                try board.updateCommentText(id: id, text: oldText)
+            case .commentResolutionToggled(let id, let oldValue, _):
+                try board.setCommentResolved(id: id, resolved: oldValue)
             }
         } catch {
             assertionFailure("undo failed: \(error)")

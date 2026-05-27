@@ -96,6 +96,11 @@ struct FieldView: View {
     /// toolbar button again exits.
     @Binding var isPlacingText: Bool
 
+    /// Figma-style comment-placement mode. Same hand-off as
+    /// `isPlacingText` but creates a Comment pin instead of
+    /// floating text.
+    @Binding var isPlacingComment: Bool
+
     /// Logical size of the active sketch and of each snapshot tile.
     static let sketchSize = CGSize(width: 800, height: 600)
 
@@ -114,6 +119,11 @@ struct FieldView: View {
     @State private var pendingScale: CGFloat = 1.0
     @State private var draggingSnapshot: (id: UUID, translation: CGSize)?
     @State private var didCenter = false
+
+    /// Pan value captured at the start of a pinch so we can
+    /// derive the in-flight pan correction without it sliding
+    /// every onChanged call.
+    @State private var pinchStartPan: CGSize?
 
     /// Last container size we observed via GeometryReader. Captured
     /// so capture-placement can compute the viewport center in
@@ -171,6 +181,13 @@ struct FieldView: View {
                         .onTapGesture(coordinateSpace: .global) { location in
                             placeText(atGlobal: location, in: geo.frame(in: .global))
                             isPlacingText = false
+                        }
+                } else if isPlacingComment {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture(coordinateSpace: .global) { location in
+                            placeComment(atGlobal: location, in: geo.frame(in: .global))
+                            isPlacingComment = false
                         }
                 }
             }
@@ -374,6 +391,16 @@ struct FieldView: View {
                     .offset(
                         x: note.x + draggingOffset(for: note.id).width,
                         y: note.y + draggingOffset(for: note.id).height)
+            }
+
+            // Comment pins — above everything else so they're
+            // always clickable. Each renders as a small dot at
+            // the pin's field position; click to open a popover.
+            ForEach(store.canvas.comments) { comment in
+                commentPinView(comment)
+                    .offset(
+                        x: comment.x + draggingOffset(for: comment.id).width - 14,
+                        y: comment.y + draggingOffset(for: comment.id).height - 14)
             }
 
             // Peer cursors. Drawn inside the transformed layer so
@@ -630,6 +657,100 @@ struct FieldView: View {
             }
     }
 
+    // MARK: - Comment pins
+
+    @State private var openedCommentId: UUID?
+    @State private var commentEditDrafts: [UUID: String] = [:]
+
+    @ViewBuilder
+    private func commentPinView(_ comment: Comment) -> some View {
+        let isOpen = openedCommentId == comment.id
+        let pinColor = comment.isResolved
+            ? Color.gray
+            : PresenceCoordinator.color(for: comment.authorPeerId)
+
+        ZStack {
+            Circle()
+                .fill(pinColor)
+                .overlay(Circle().stroke(Color.white, lineWidth: 2))
+            // Quote-bubble glyph so the pin reads as "comment"
+            // and not "user avatar".
+            Image(systemName: "text.bubble.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+        .frame(width: 28, height: 28)
+        .shadow(color: .black.opacity(0.20), radius: 4, x: 0, y: 1)
+        .opacity(comment.isResolved ? 0.55 : 1)
+        .contentShape(Circle())
+        .onTapGesture { openedCommentId = isOpen ? nil : comment.id }
+        .gesture(commentDragGesture(for: comment))
+        .popover(isPresented: Binding(
+            get: { openedCommentId == comment.id },
+            set: { if !$0 { openedCommentId = nil } })
+        ) {
+            CommentPopover(
+                comment: comment,
+                draft: Binding(
+                    get: { commentEditDrafts[comment.id] ?? comment.text },
+                    set: { commentEditDrafts[comment.id] = $0 }),
+                onSave: { newText in commitCommentEdit(id: comment.id, text: newText) },
+                onResolve: { try? store.toggleCommentResolution(id: comment.id) },
+                onDelete: {
+                    openedCommentId = nil
+                    try? store.removeComment(id: comment.id)
+                })
+            .frame(minWidth: 260)
+            .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private func commitCommentEdit(id: UUID, text: String) {
+        do { try store.updateCommentText(id: id, to: text) }
+        catch { assertionFailure("updateComment failed: \(error)") }
+    }
+
+    private func commentDragGesture(for comment: Comment) -> some Gesture {
+        DragGesture(coordinateSpace: .global)
+            .onChanged { value in
+                draggingSnapshot = (comment.id, value.translation)
+            }
+            .onEnded { value in
+                let dx = value.translation.width / currentScale
+                let dy = value.translation.height / currentScale
+                do {
+                    try store.moveComment(
+                        id: comment.id,
+                        to: comment.x + dx,
+                        y: comment.y + dy)
+                } catch {
+                    assertionFailure("moveComment failed: \(error)")
+                }
+                draggingSnapshot = nil
+            }
+    }
+
+    /// Place a comment pin at a specific click location, like
+    /// the Figma "comment tool" workflow.
+    private func placeComment(atGlobal global: CGPoint, in globalFrame: CGRect) {
+        let local = CGPoint(
+            x: global.x - globalFrame.minX,
+            y: global.y - globalFrame.minY)
+        let fieldX = (local.x - currentPan.width) / currentScale
+        let fieldY = (local.y - currentPan.height) / currentScale
+        do {
+            let comment = try store.addComment(
+                at: Double(fieldX), y: Double(fieldY),
+                authorPeerId: presence.localPeerId,
+                authorName: presence.localDisplayName,
+                text: "")
+            openedCommentId = comment.id
+            commentEditDrafts[comment.id] = ""
+        } catch {
+            assertionFailure("addComment failed: \(error)")
+        }
+    }
+
     /// Place a text note at a specific click location (global
     /// coords), used by the Figma-style placement mode.
     private func placeText(atGlobal global: CGPoint, in globalFrame: CGRect) {
@@ -812,14 +933,56 @@ struct FieldView: View {
             }
     }
 
+    /// Magnify with the pinch / trackpad-pinch center as the
+    /// zoom anchor — Figma's "zoom under cursor" behavior. With
+    /// the older `MagnificationGesture` we only got a scale factor
+    /// and had to zoom from `topLeading`, which made the canvas
+    /// dart off as the user pinched. `MagnifyGesture` (iOS 17 /
+    /// macOS 14+) reports `startLocation` so we can keep the
+    /// pinched field-point sitting under the user's fingers.
+    ///
+    /// During the gesture: `pendingScale` is updated and a
+    /// `pendingPan` correction is computed so the start-of-pinch
+    /// field-coords stay anchored to `startLocation` even as the
+    /// effective scale grows / shrinks.
+    ///
+    /// On end: commit both into `scale` / `pan` and reset
+    /// pendings.
     private var magnifyGesture: some Gesture {
-        MagnificationGesture()
+        MagnifyGesture()
             .onChanged { value in
-                pendingScale = value
+                let factor = value.magnification
+                pendingScale = factor
+
+                // The anchor is the start-of-pinch screen point
+                // in the FieldView's local space. We want the
+                // field-coord beneath it to stay fixed as scale
+                // changes; that means adjusting pan by:
+                //   newPan = anchor - (anchor - startPan) * factor
+                // where startPan is the pan at gesture start.
+                // We capture startPan via the @State below.
+                let anchor = value.startLocation
+                let startPan = pinchStartPan ?? pan
+                if pinchStartPan == nil { pinchStartPan = pan }
+                pendingPan = CGSize(
+                    width: anchor.x - (anchor.x - startPan.width) * factor - pan.width,
+                    height: anchor.y - (anchor.y - startPan.height) * factor - pan.height)
             }
             .onEnded { value in
-                scale = clampScale(scale * value)
+                let factor = value.magnification
+                let newScale = clampScale(scale * factor)
+                // Same anchor math as above, but committed and
+                // re-clamped against the final scale ratio.
+                let effective = newScale / scale
+                let anchor = value.startLocation
+                let startPan = pinchStartPan ?? pan
+                pan = CGSize(
+                    width: anchor.x - (anchor.x - startPan.width) * effective,
+                    height: anchor.y - (anchor.y - startPan.height) * effective)
+                scale = newScale
                 pendingScale = 1.0
+                pendingPan = .zero
+                pinchStartPan = nil
             }
     }
 

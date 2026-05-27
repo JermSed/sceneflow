@@ -123,6 +123,9 @@ final class BoardDocument {
             if try doc.get(obj: .ROOT, key: "images") == nil {
                 _ = try doc.putObject(obj: .ROOT, key: "images", ty: .List)
             }
+            if try doc.get(obj: .ROOT, key: "comments") == nil {
+                _ = try doc.putObject(obj: .ROOT, key: "comments", ty: .List)
+            }
             // Sanity-check that the existing tree decodes to our model.
             _ = try AutomergeDecoder(doc: doc).decode(CanvasDoc.self)
         }
@@ -138,6 +141,7 @@ final class BoardDocument {
         _ = try doc.putObject(obj: sketchId, key: "strokes", ty: .List)
         _ = try doc.putObject(obj: .ROOT, key: "texts", ty: .List)
         _ = try doc.putObject(obj: .ROOT, key: "images", ty: .List)
+        _ = try doc.putObject(obj: .ROOT, key: "comments", ty: .List)
     }
 
     // MARK: - Snapshotting the Swift value
@@ -460,6 +464,53 @@ final class BoardDocument {
         }
     }
 
+    // MARK: - Comments
+
+    func addComment(_ comment: Comment) throws {
+        let list = try commentsListId()
+        let endIndex = doc.length(obj: list)
+        let map = try doc.insertObject(obj: list, index: endIndex, ty: .Map)
+        try doc.put(obj: map, key: "id", value: .String(comment.id.uuidString))
+        try doc.put(obj: map, key: "x", value: .F64(comment.x))
+        try doc.put(obj: map, key: "y", value: .F64(comment.y))
+        try doc.put(obj: map, key: "z", value: .Int(Int64(comment.z)))
+        try doc.put(obj: map, key: "authorPeerId", value: .String(comment.authorPeerId))
+        try doc.put(obj: map, key: "authorName", value: .String(comment.authorName))
+        try doc.put(obj: map, key: "text", value: .String(comment.text))
+        try doc.put(obj: map, key: "createdAt", value: .Timestamp(comment.createdAt))
+        try doc.put(obj: map, key: "isResolved", value: .Boolean(comment.isResolved))
+    }
+
+    func updateCommentText(id: UUID, text: String) throws {
+        guard let map = try findCommentMap(id: id) else { return }
+        try doc.put(obj: map, key: "text", value: .String(text))
+    }
+
+    func setCommentResolved(id: UUID, resolved: Bool) throws {
+        guard let map = try findCommentMap(id: id) else { return }
+        try doc.put(obj: map, key: "isResolved", value: .Boolean(resolved))
+    }
+
+    func moveComment(id: UUID, to x: Double, y: Double) throws {
+        guard let map = try findCommentMap(id: id) else { return }
+        try doc.put(obj: map, key: "x", value: .F64(x))
+        try doc.put(obj: map, key: "y", value: .F64(y))
+    }
+
+    func removeComment(id: UUID) throws {
+        let list = try commentsListId()
+        let count = doc.length(obj: list)
+        let target = id.uuidString
+        for i in 0..<count {
+            guard case let .Object(map, .Map) = try doc.get(obj: list, index: i) else { continue }
+            guard case let .Scalar(.String(idString)) = try doc.get(obj: map, key: "id") else { continue }
+            if idString == target {
+                try doc.delete(obj: list, index: i)
+                return
+            }
+        }
+    }
+
     // MARK: - Internal helpers
 
     /// Write a `Stroke` value into an existing strokes list at `index`.
@@ -524,6 +575,24 @@ final class BoardDocument {
 
     private func findImageMap(id: UUID) throws -> ObjId? {
         let list = try imagesListId()
+        let count = doc.length(obj: list)
+        let target = id.uuidString
+        for i in 0..<count {
+            guard case let .Object(map, .Map) = try doc.get(obj: list, index: i) else { continue }
+            guard case let .Scalar(.String(idString)) = try doc.get(obj: map, key: "id") else { continue }
+            if idString == target { return map }
+        }
+        return nil
+    }
+
+    private func commentsListId() throws -> ObjId {
+        guard case let .Object(id, .List) = try doc.get(obj: .ROOT, key: "comments")
+        else { throw BoardError.malformedDocument("root.comments is not a list") }
+        return id
+    }
+
+    private func findCommentMap(id: UUID) throws -> ObjId? {
+        let list = try commentsListId()
         let count = doc.length(obj: list)
         let target = id.uuidString
         for i in 0..<count {
