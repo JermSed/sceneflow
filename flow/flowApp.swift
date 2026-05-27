@@ -26,9 +26,14 @@ struct flowApp: App {
     /// can show progress / errors out of band of the list view.
     @State private var pendingJoin: PendingJoin?
 
+    /// Navigation path for the root NavigationStack. Owned here
+    /// (not in BoardListView) so the URL handler can push the
+    /// joined board id and the user lands directly in the canvas.
+    @State private var navigationPath: [UUID] = []
+
     var body: some Scene {
         WindowGroup {
-            BoardListView()
+            BoardListView(path: $navigationPath)
                 .environmentObject(library)
                 .onOpenURL { url in
                     handleIncomingURL(url)
@@ -75,10 +80,15 @@ struct flowApp: App {
         pendingJoin = PendingJoin(documentId: docId, status: .joining)
         Task {
             do {
-                _ = try await library.joinBoard(
+                let summary = try await library.joinBoard(
                     documentId: docId,
                     name: joinedName)
                 pendingJoin = PendingJoin(documentId: docId, status: .joined)
+                // Push the user straight into the board they just
+                // joined. Reset the path first so we end up with a
+                // single destination on the stack, regardless of
+                // where they were when the URL arrived.
+                navigationPath = [summary.id]
                 // Clear the banner after a beat so it doesn't linger.
                 try? await Task.sleep(for: .seconds(2))
                 pendingJoin = nil

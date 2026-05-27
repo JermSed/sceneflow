@@ -16,10 +16,11 @@ struct BoardListView: View {
 
     @EnvironmentObject private var library: BoardLibrary
 
-    /// `selection` is the board the user has navigated into. Bound to
-    /// `NavigationStack`'s path so we can programmatically push the
-    /// newly-created board onto the stack.
-    @State private var path: [UUID] = []
+    /// Navigation path, bound from `flowApp` so the URL handler
+    /// can push a freshly-joined board onto the stack and the user
+    /// lands inside the canvas instead of staring at the list and
+    /// wondering what happened.
+    @Binding var path: [UUID]
 
     /// Sheet state for "rename board" — separate from the list so the
     /// row context-menu can just set this and the sheet observes it.
