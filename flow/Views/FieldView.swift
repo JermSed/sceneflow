@@ -89,6 +89,13 @@ struct FieldView: View {
     /// we decode/compress and place at viewport center.
     @Binding var addImageRequest: Data?
 
+    /// Figma-style text-placement mode. When true we overlay a
+    /// transparent tap surface above everything else — a click
+    /// places a TextNote at that exact field position and drops
+    /// the user straight into edit mode. ESC or tapping the
+    /// toolbar button again exits.
+    @Binding var isPlacingText: Bool
+
     /// Logical size of the active sketch and of each snapshot tile.
     static let sketchSize = CGSize(width: 800, height: 600)
 
@@ -147,6 +154,26 @@ struct FieldView: View {
             }
             .clipped()
             .simultaneousGesture(magnifyGesture)
+            .overlay {
+                // Figma-style text placement. While armed we
+                // intercept ALL clicks with a transparent layer
+                // above the content (and above the dot-grid +
+                // any snapshots) so a click reliably places a
+                // text note instead of getting eaten by a
+                // snapshot drag or the field's pan. The cursor
+                // shape on macOS becomes the I-beam from
+                // `.pointerStyle(.text)` if we wanted; for now
+                // we just rely on the toolbar button's "on"
+                // state as the visual signal.
+                if isPlacingText {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture(coordinateSpace: .global) { location in
+                            placeText(atGlobal: location, in: geo.frame(in: .global))
+                            isPlacingText = false
+                        }
+                }
+            }
             .onAppear {
                 containerSize = geo.size
                 centerSketchOnce(in: geo.size)
@@ -504,32 +531,36 @@ struct FieldView: View {
         let isEditing = editingTextId == note.id
         Group {
             if isEditing {
+                // Faint accent-tinted backdrop only while
+                // actively editing — gives the user a clear
+                // I-beam target without imposing a white card.
                 TextField("", text: $textEditDraft, axis: .vertical)
                     .font(.system(size: CGFloat(note.fontSize)))
                     .foregroundStyle(Color(rgba: note.color))
+                    .textFieldStyle(.plain)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
                     .background(
                         RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.white.opacity(0.95))
+                            .fill(Color.accentColor.opacity(0.06))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 4)
-                                    .stroke(Color.accentColor, lineWidth: 1)))
-                    .textFieldStyle(.plain)
+                                    .stroke(Color.accentColor.opacity(0.6),
+                                            lineWidth: 1)))
                     .onSubmit { commitTextEdit() }
                     .frame(maxWidth: 320, alignment: .leading)
             } else {
+                // Transparent in resting state — just type
+                // floating on the field, Figma-style. Empty
+                // notes show a muted placeholder hint.
                 Text(note.text.isEmpty ? "Empty note" : note.text)
                     .font(.system(size: CGFloat(note.fontSize)))
                     .foregroundStyle(
                         note.text.isEmpty
-                            ? Color.secondary.opacity(0.6)
+                            ? Color.secondary.opacity(0.5)
                             : Color(rgba: note.color))
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
-                    .background(
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.white.opacity(0.7)))
                     .contentShape(Rectangle())
                     .onTapGesture(count: 2) {
                         beginTextEdit(note)
@@ -599,9 +630,27 @@ struct FieldView: View {
             }
     }
 
+    /// Place a text note at a specific click location (global
+    /// coords), used by the Figma-style placement mode.
+    private func placeText(atGlobal global: CGPoint, in globalFrame: CGRect) {
+        // Translate global → FieldView-local → field coords.
+        let local = CGPoint(
+            x: global.x - globalFrame.minX,
+            y: global.y - globalFrame.minY)
+        let fieldX = (local.x - currentPan.width) / currentScale
+        let fieldY = (local.y - currentPan.height) / currentScale
+        do {
+            let note = try store.addText(
+                at: Double(fieldX), y: Double(fieldY), text: "")
+            beginTextEdit(note)
+        } catch {
+            assertionFailure("placeText failed: \(error)")
+        }
+    }
+
     /// Add a text note at the user's current viewport center.
-    /// Called by the "+text" toolbar button and the Cmd+V paste
-    /// handler when the clipboard contains a string.
+    /// Used by the Cmd+V paste handler when the clipboard
+    /// contains a string.
     func addTextAtViewportCenter(initial: String = "") {
         let topLeft = topLeftCenteredOnViewport()
         do {

@@ -40,15 +40,20 @@ struct BoardOpenView: View {
     @State private var captureRequest: Bool = false
 
     /// Trigger flag for "add text note" — same hand-off pattern
-    /// as captureRequest. Set by the toolbar button (or the
-    /// Cmd+V paste handler when the clipboard has a string);
-    /// FieldView creates a TextNote at the current viewport
-    /// center and resets the flag.
+    /// as captureRequest. Set by the Cmd+V paste handler when
+    /// the clipboard has a string; FieldView creates a TextNote
+    /// at the current viewport center and resets the flag.
     @State private var addTextRequest: String? = nil
 
     /// Trigger flag for "add image note" with the image bytes
     /// to embed. Same hand-off pattern.
     @State private var addImageRequest: Data? = nil
+
+    /// Figma-style: when armed, the next click in the field
+    /// places a TextNote at that exact field position (instead
+    /// of dropping one at viewport center). Toggled by the
+    /// toolbar's text button; ESC cancels.
+    @State private var isPlacingText: Bool = false
 
     var body: some View {
         Group {
@@ -64,7 +69,8 @@ struct BoardOpenView: View {
                         sketchOpenedLocally: $sketchOpenedLocally,
                         captureRequest: $captureRequest,
                         addTextRequest: $addTextRequest,
-                        addImageRequest: $addImageRequest)
+                        addImageRequest: $addImageRequest,
+                        isPlacingText: $isPlacingText)
 
                     // Slim banner that drops down from the top of
                     // the board when the sync socket isn't ready.
@@ -247,12 +253,23 @@ struct BoardOpenView: View {
         }
 
         ToolbarItem(placement: .primaryAction) {
+            // Figma-style placement: arm the tool, then the next
+            // click in the field places + enters edit mode. The
+            // button stays "on" until the user taps it again or
+            // hits ESC, so multiple text notes can be placed in
+            // a row without re-tapping.
             Button {
-                addTextRequest = ""
+                isPlacingText.toggle()
             } label: {
-                Label("Add text", systemImage: "text.cursor")
+                Image(systemName: "textformat")
+                    .foregroundStyle(isPlacingText ? Color.white : Color.primary)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(isPlacingText ? Color.accentColor : Color.clear))
             }
-            .accessibilityLabel("Add text note")
+            .buttonStyle(.plain)
+            .accessibilityLabel(isPlacingText ? "Cancel placing text" : "Place text")
         }
 
         ToolbarItem(placement: .primaryAction) {
