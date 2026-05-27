@@ -198,10 +198,14 @@ struct BoardOpenView: View {
             Button {
                 sketchOpenedLocally = true
             } label: {
-                Label("New sketch", systemImage: "square.and.pencil")
+                // A plain "+" reads as "new thing" everywhere on
+                // iOS. The earlier square.and.pencil icon was
+                // too subtle and got mistaken for a generic edit
+                // glyph.
+                Label("New sketch", systemImage: "plus")
+                    .labelStyle(.iconOnly)
+                    .font(.system(size: 18, weight: .semibold))
             }
-            // Already open (locally or because the doc has strokes)
-            // — disable so "+" doesn't read as a no-op.
             .disabled(isSketchVisible(store: store))
         }
 
