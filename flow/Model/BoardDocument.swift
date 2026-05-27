@@ -220,7 +220,19 @@ final class BoardDocument {
         // the snapshot must be an independent copy so future edits to
         // the live sketch don't mutate the captured frame.
         let active = try snapshot().activeSketch.strokes
+        return try captureSnapshotUsing(
+            strokes: active, at: x, y: y, z: z, id: id)
+    }
 
+    /// Same as `captureSnapshot` but takes the strokes to freeze
+    /// as a parameter — used by `BoardStore` which already has
+    /// the active strokes in memory (via the cached `canvas`) and
+    /// shouldn't re-decode the entire CanvasDoc just to capture.
+    @discardableResult
+    func captureSnapshotUsing(
+        strokes: [Stroke],
+        at x: Double, y: Double, z: Int, id: UUID
+    ) throws -> UUID {
         let snapshotsList = try snapshotsListId()
         let endIndex = doc.length(obj: snapshotsList)
         let snapshotMap = try doc.insertObject(obj: snapshotsList, index: endIndex, ty: .Map)
@@ -229,12 +241,12 @@ final class BoardDocument {
         try doc.put(obj: snapshotMap, key: "y", value: .F64(y))
         try doc.put(obj: snapshotMap, key: "z", value: .Int(Int64(z)))
         let snapshotStrokes = try doc.putObject(obj: snapshotMap, key: "strokes", ty: .List)
-        for (i, stroke) in active.enumerated() {
+        for (i, stroke) in strokes.enumerated() {
             try writeStroke(into: snapshotStrokes, at: UInt64(i), stroke: stroke)
         }
 
-        // Clear the live sketch. `splice` with delete = length and no
-        // values is the one-call way to empty a list.
+        // Clear the live sketch. `splice` with delete = length and
+        // no values is the one-call way to empty a list.
         let activeStrokes = try activeStrokesId()
         let activeLength = doc.length(obj: activeStrokes)
         if activeLength > 0 {

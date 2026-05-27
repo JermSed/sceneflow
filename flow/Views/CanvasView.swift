@@ -106,30 +106,42 @@ struct CanvasView: View {
     }
 
     var body: some View {
-        Canvas { ctx, _ in
-            // 1. Already-committed strokes from the doc.
-            for stroke in committedStrokes {
-                guard !stroke.points.isEmpty else { continue }
-                ctx.stroke(
-                    Self.path(for: stroke.points),
-                    with: .color(Color(rgba: stroke.color)),
-                    style: Self.strokeStyle(width: stroke.width))
+        ZStack {
+            // 1. Committed strokes layer. Wrapped in `.drawingGroup()`
+            //    so SwiftUI rasterizes it once into a Metal-backed
+            //    bitmap and only re-rasterizes when the committed
+            //    stroke list actually changes (a new commit or an
+            //    erase). The live drawing path no longer drags the
+            //    full stroke list through Canvas on every pen
+            //    sample — that's what made dense sketches stutter.
+            Canvas { ctx, _ in
+                for stroke in committedStrokes {
+                    guard !stroke.points.isEmpty else { continue }
+                    ctx.stroke(
+                        Self.path(for: stroke.points),
+                        with: .color(Color(rgba: stroke.color)),
+                        style: Self.strokeStyle(width: stroke.width))
+                }
             }
-            // 2. The stroke the user is drawing right now (or just
-            //    finished drawing, if the commit hasn't propagated
-            //    through the @Published canvas yet). Rendered from
-            //    the local buffer with the same style as committed
-            //    strokes so the handoff is invisible.
+            .drawingGroup(opaque: false)
+
+            // 2. Live overlay — just the in-progress stroke. Tiny
+            //    by construction (one stroke's worth of points),
+            //    so redrawing per pen sample is cheap. NOT
+            //    `.drawingGroup()`'d because it needs to update
+            //    every sample and caching would defeat the point.
             //
-            //    `showLiveOverlay` ensures we don't double-draw
-            //    once the doc-derived canvas already includes the
-            //    same stroke.
-            if showLiveOverlay, !inProgressPoints.isEmpty {
+            //    `showLiveOverlay` suppresses this once the
+            //    committed list contains the just-finished stroke
+            //    so we don't double-draw it.
+            Canvas { ctx, _ in
+                guard showLiveOverlay, !inProgressPoints.isEmpty else { return }
                 ctx.stroke(
                     Self.path(for: inProgressPoints),
                     with: .color(Color(rgba: color)),
                     style: Self.strokeStyle(width: width))
             }
+            .allowsHitTesting(false)
         }
         // The frame chrome (white paper background, border, shadow)
         // lives in FieldView so we render onto a transparent canvas

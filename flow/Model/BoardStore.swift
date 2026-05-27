@@ -54,6 +54,13 @@ final class BoardStore: ObservableObject {
     private let board: BoardDocument
     private var changeSink: AnyCancellable?
 
+    /// When true, `refresh()` short-circuits — used to suppress
+    /// the canvas re-decode during batched operations like
+    /// `captureSnapshot` that fire thousands of Automerge changes
+    /// in quick succession. A single explicit `refresh()` runs
+    /// after the batch.
+    private var suppressRefresh = false
+
     private var undoStack: [UndoableAction] = []
     private var redoStack: [UndoableAction] = []
     /// Cap to keep memory bounded on long sessions. 100 is plenty
@@ -87,17 +94,47 @@ final class BoardStore: ObservableObject {
     }
 
     private func subscribeToDocChanges() {
+        // Throttle the doc → canvas re-decode at ~60Hz. The
+        // underlying publisher fires once per Automerge mutation;
+        // for a captureSnapshot that's tens of thousands of
+        // changes in a single tick, and re-decoding the full
+        // CanvasDoc each time would crater the main thread.
+        // 60Hz matches typical screen refresh — finer granularity
+        // wouldn't be visible anyway. `latest: true` ensures the
+        // most recent state is what we publish, not an arbitrary
+        // earlier one.
         changeSink = board.doc.objectDidChange
-            .receive(on: RunLoop.main)
+            .throttle(for: .milliseconds(16), scheduler: RunLoop.main, latest: true)
             .sink { [weak self] in self?.refresh() }
     }
 
     private func refresh() {
+        guard !suppressRefresh else { return }
         do {
             canvas = try board.snapshot()
         } catch {
             assertionFailure("BoardStore failed to snapshot: \(error)")
         }
+    }
+
+    /// Run a closure that's going to fire many Automerge changes
+    /// without letting each one re-decode the doc. One refresh
+    /// runs at the end, syncing `canvas` to the final state.
+    /// Used by `captureSnapshot` where a single user action
+    /// produces tens of thousands of writes.
+    private func withBatchedRefresh<T>(_ work: () throws -> T) rethrows -> T {
+        suppressRefresh = true
+        let result: T
+        do {
+            result = try work()
+        } catch {
+            suppressRefresh = false
+            refresh()
+            throw error
+        }
+        suppressRefresh = false
+        refresh()
+        return result
     }
 
     // MARK: - Persistence
@@ -164,7 +201,16 @@ final class BoardStore: ObservableObject {
         // active sketch — without them, undoing a capture would
         // leave the user staring at an empty board.
         let restored = canvas.activeSketch.strokes
-        let snapId = try board.captureSnapshot(at: x, y: y, z: z, id: id)
+        // Batch the writes. captureSnapshot fires one Automerge
+        // change per scalar field per point per stroke — easily
+        // 20k events for a dense sketch — and without batching
+        // each one would round-trip through Combine and decode
+        // the full doc.
+        let snapId = try withBatchedRefresh {
+            try board.captureSnapshotUsing(
+                strokes: restored,
+                at: x, y: y, z: z, id: id)
+        }
         let snap = Snapshot(id: snapId, x: x, y: y, z: z, strokes: restored)
         push(.snapshotCaptured(snapshot: snap, restoredStrokes: restored))
         return snapId

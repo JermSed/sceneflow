@@ -664,6 +664,13 @@ private struct SnapshotTileView: View {
                         lineJoin: .round))
             }
         }
+        // Cache the rendered tile as a Metal bitmap so dragging
+        // the snapshot (or panning the whole field) just
+        // translates the cached layer — no per-frame redraw of
+        // every stroke. When the snapshot's content changes
+        // (peer edit, local edit-mode commit) SwiftUI re-evaluates
+        // the body and the cache gets refreshed once.
+        .drawingGroup(opaque: false)
     }
 
     /// Same midpoint-quadratic smoothing used by `CanvasView`.
