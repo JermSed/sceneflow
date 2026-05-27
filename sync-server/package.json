@@ -1,13 +1,17 @@
 {
   "name": "sceneflow-sync-server",
   "private": true,
-  "version": "0.1.0",
-  "description": "Local Automerge sync relay for Sceneflow. Thin wrapper around @automerge/automerge-repo-sync-server.",
+  "version": "0.2.0",
+  "description": "Local Automerge sync + presence relays for Sceneflow.",
   "type": "module",
   "scripts": {
-    "start": "automerge-repo-sync-server"
+    "start": "concurrently --kill-others --names 'sync,presence' --prefix-colors 'cyan,magenta' 'automerge-repo-sync-server' 'node presence.js'",
+    "start:sync": "automerge-repo-sync-server",
+    "start:presence": "node presence.js"
   },
   "dependencies": {
-    "@automerge/automerge-repo-sync-server": "^0.2.8"
+    "@automerge/automerge-repo-sync-server": "^0.2.8",
+    "concurrently": "^9.0.0",
+    "ws": "^8.18.0"
   }
 }

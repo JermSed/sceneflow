@@ -33,15 +33,41 @@
 //
 
 import SwiftUI
+import AutomergeRepo
 
 struct CanvasView: View {
 
     @ObservedObject var store: BoardStore
 
+    /// The active board's sync identity. Needed so presence
+    /// messages get tagged per-board, and so receivers can filter
+    /// out messages for boards they're not viewing.
+    let documentId: DocumentId
+
+    /// String form of `documentId`, captured once so we don't
+    /// re-derive it on every drag sample.
+    private var documentIdProxy: DocumentIdProxy { DocumentIdProxy(documentId.id) }
+
+    /// The presence channel. Optional so a CanvasView wrapped in
+    /// a preview or a test rig can omit it; production wires it
+    /// in from `BoardLibrary.presence`.
+    let presence: PresenceCoordinator?
+
+    /// Currently-selected tool. Dispatches the drag gesture
+    /// between drawing and erasing.
+    let tool: DrawingTool
+
     /// In-flight stroke points, in sketch-local coordinates.
     /// Lives in `@State` so SwiftUI invalidates the body when it
     /// grows — but the doc isn't touched until release.
     @State private var inProgressPoints: [Point] = []
+
+    /// Stable id for the stroke being drawn right now. Minted at
+    /// the first sample of a drag so both the live-broadcast and
+    /// the eventual `commitStroke` use the same id — receivers
+    /// can then drop their overlay when the real stroke arrives
+    /// via doc sync.
+    @State private var currentStrokeId: UUID?
 
     /// The id we minted for the stroke we just committed. We hold
     /// onto it (and onto `inProgressPoints`) until that stroke
@@ -50,6 +76,12 @@ struct CanvasView: View {
     /// canvas reflects the new stroke" where the stroke isn't drawn
     /// from either source and the user sees it flash out and back in.
     @State private var pendingStrokeId: UUID?
+
+    /// Last presence broadcast wall-clock. Throttles broadcasts to
+    /// ~30Hz — fast enough to look live, slow enough to keep the
+    /// relay and peers' SwiftUI render loops calm.
+    @State private var lastBroadcast: Date = .distantPast
+    private let broadcastInterval: TimeInterval = 1.0 / 30
 
     /// Hardcoded for Phase 1 — pickers come later.
     private let defaultColor: UInt32 = 0x111111FF  // near-black
@@ -125,19 +157,78 @@ struct CanvasView: View {
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                inProgressPoints.append(Point(
-                    x: Double(value.location.x),
-                    y: Double(value.location.y),
-                    pressure: 0.5))
+                switch tool {
+                case .pen:    handleDragChange(at: value.location)
+                case .eraser: handleEraseChange(at: value.location)
+                }
             }
             .onEnded { _ in
-                commitInProgressStroke()
+                switch tool {
+                case .pen:    commitInProgressStroke()
+                case .eraser: break
+                }
             }
     }
 
+    /// Eraser hit radius in sketch-local points. Big enough to
+    /// feel forgiving without erasing strokes the user wasn't
+    /// aiming for. Tune by feel.
+    private static let eraseRadius: Double = 18
+
+    private func handleEraseChange(at location: CGPoint) {
+        let p = CGPoint(x: location.x, y: location.y)
+        // Find strokes whose sampled points are within the
+        // erase radius of the current pointer. Whole-stroke
+        // erasure (vs. splitting on the erased segment) is the
+        // simpler model and matches what most sketching apps
+        // do at small radii.
+        let hits = store.canvas.activeSketch.strokes.filter { stroke in
+            stroke.points.contains { pt in
+                hypot(pt.x - p.x, pt.y - p.y) < Self.eraseRadius
+            }
+        }
+        for stroke in hits {
+            try? store.removeActiveStroke(id: stroke.id)
+        }
+    }
+
+    private func handleDragChange(at location: CGPoint) {
+        let point = Point(
+            x: Double(location.x),
+            y: Double(location.y),
+            pressure: 0.5)
+        inProgressPoints.append(point)
+
+        // Mint the stroke id at the first sample of the drag so
+        // it stays stable through the live broadcasts and the
+        // eventual commit.
+        if currentStrokeId == nil {
+            currentStrokeId = UUID()
+        }
+
+        // Throttle the presence broadcast. Local rendering keeps
+        // ticking on every sample (60–120Hz) — the throttle only
+        // bounds what we send to peers.
+        let now = Date()
+        guard now.timeIntervalSince(lastBroadcast) >= broadcastInterval else { return }
+        lastBroadcast = now
+
+        guard let presence, let id = currentStrokeId else { return }
+        presence.sendLiveStroke(
+            id: id,
+            points: inProgressPoints,
+            color: defaultColor,
+            width: defaultWidth,
+            cursor: location,
+            in: documentIdProxy)
+    }
+
     private func commitInProgressStroke() {
-        guard !inProgressPoints.isEmpty else { return }
-        let id = UUID()
+        guard !inProgressPoints.isEmpty else {
+            currentStrokeId = nil
+            return
+        }
+        let id = currentStrokeId ?? UUID()
         let stroke = Stroke(
             id: id,
             color: defaultColor,
@@ -145,10 +236,17 @@ struct CanvasView: View {
             points: inProgressPoints)
         do {
             try store.commitStroke(stroke)
+            // Tell peers to drop their copy of the in-progress
+            // overlay — the real stroke is on its way via doc
+            // sync and will arrive shortly. Sending the same id
+            // they've been seeing means they know exactly which
+            // overlay to dismiss.
+            presence?.sendEndStroke(id: id, in: documentIdProxy)
             // Hold onto inProgressPoints; .onChange below will clear
             // them once the doc-derived canvas catches up. That's
-            // what makes the handoff visually seamless.
+            // what makes the local handoff visually seamless.
             pendingStrokeId = id
+            currentStrokeId = nil
         } catch {
             // A commit failure here means the Automerge doc itself
             // refused the write — almost certainly a programming
@@ -156,6 +254,7 @@ struct CanvasView: View {
             // Drop the buffer so the next stroke starts clean.
             assertionFailure("commitStroke failed: \(error)")
             inProgressPoints = []
+            currentStrokeId = nil
         }
     }
 

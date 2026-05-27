@@ -129,6 +129,11 @@ final class BoardLibrary: ObservableObject {
     /// subscription.
     let syncStatus: SyncStatusObserver
 
+    /// Presence channel — owns peer cursors and live strokes.
+    /// One per app instance; views filter by the board they're
+    /// showing.
+    let presence: PresenceCoordinator
+
     /// URL of the relay this library connects to. Default is the
     /// local Node.js sync-server in this repo; can be overridden
     /// (e.g. for tests, or to point at production).
@@ -162,6 +167,10 @@ final class BoardLibrary: ObservableObject {
         self.webSocket = WebSocketProvider(
             .init(reconnectOnError: true, loggingAt: .errorOnly))
         self.syncStatus = SyncStatusObserver(provider: self.webSocket)
+        // Presence rides a separate WebSocket (sync-server/presence.js)
+        // because automerge-repo-swift 0.3.2's ephemeral-message
+        // receive path is stubbed out. See PresenceCoordinator.swift.
+        self.presence = PresenceCoordinator()
 
         try loadIndex()
         startSync()

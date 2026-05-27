@@ -247,6 +247,32 @@ final class BoardDocument {
         return id
     }
 
+    /// Erase a stroke from the active sketch by id. Scans the list
+    /// once and deletes the first match.
+    ///
+    /// Concurrency: deletion in Automerge's list CRDT is a
+    /// last-write-wins tombstone, so two clients erasing the same
+    /// stroke simultaneously converges to "gone" without
+    /// duplication or resurrection. New strokes drawn concurrently
+    /// at adjacent positions are unaffected by this delete because
+    /// they live at independent list positions in the underlying
+    /// CRDT (the list CRDT keys by stable ids, not indices).
+    func removeActiveStroke(id: UUID) throws {
+        let strokesList = try activeStrokesId()
+        let count = doc.length(obj: strokesList)
+        let target = id.uuidString
+        for i in 0..<count {
+            guard case let .Object(strokeMap, .Map) = try doc.get(obj: strokesList, index: i)
+            else { continue }
+            guard case let .Scalar(.String(idString)) = try doc.get(obj: strokeMap, key: "id")
+            else { continue }
+            if idString == target {
+                try doc.delete(obj: strokesList, index: i)
+                return
+            }
+        }
+    }
+
     /// Reposition a snapshot in the spatial field. Last-write-wins on
     /// `x` and `y` — exactly what we want for drag-to-move.
     func moveSnapshot(id: UUID, to x: Double, y: Double) throws {

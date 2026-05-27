@@ -135,6 +135,12 @@ final class BoardStore: ObservableObject {
         try board.commitStroke(stroke)
     }
 
+    /// Erase a stroke from the active sketch by its id. Used by
+    /// the eraser tool.
+    func removeActiveStroke(id: UUID) throws {
+        try board.removeActiveStroke(id: id)
+    }
+
     /// Freeze the live sketch into a snapshot at `(x, y, z)` and
     /// clear the sketch surface.
     @discardableResult

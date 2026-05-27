@@ -25,10 +25,27 @@
 //
 
 import SwiftUI
+import AutomergeRepo
 
 struct FieldView: View {
 
     @ObservedObject var store: BoardStore
+
+    /// Sync identity for the board this view is showing. Passed
+    /// down to `CanvasView` so its presence broadcasts get routed
+    /// per-board, and used to filter received presence so we only
+    /// render cursors / overlays for peers on *this* board.
+    let documentId: DocumentId
+
+    /// Presence channel for the app. Optional so this view can be
+    /// previewed in isolation; production wires it from
+    /// `BoardLibrary.presence`.
+    @ObservedObject var presence: PresenceCoordinator
+
+    /// Currently selected drawing tool. Bound from
+    /// `BoardOpenView` so the floating toolbar pill and the
+    /// drawing surface share the same selection.
+    @Binding var tool: DrawingTool
 
     /// Logical size of the active sketch and of each snapshot tile.
     static let sketchSize = CGSize(width: 800, height: 600)
@@ -70,6 +87,17 @@ struct FieldView: View {
             .simultaneousGesture(magnifyGesture)
             .onAppear { centerSketchOnce(in: geo.size) }
         }
+        // safeAreaInset puts the pill above the home indicator
+        // (and any future bottom system chrome) by inserting it
+        // *into* the safe area rather than overlaying at the raw
+        // bottom edge — that's where the previous .overlay version
+        // disappeared on iPad.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            ToolbarPill(tool: $tool)
+                .padding(.bottom, 12)
+                .padding(.top, 8)
+                .frame(maxWidth: .infinity)
+        }
     }
 
     // MARK: - Transformed content
@@ -107,6 +135,20 @@ struct FieldView: View {
                     y: snap.y + draggingOffset(for: snap.id).height)
                 .gesture(dragGesture(for: snap))
             }
+
+            // Peer cursors. Drawn inside the transformed layer so
+            // they live in field coordinates and pan / zoom with
+            // the plane. Cursors from peers drawing in the sketch
+            // are already in sketch-local coords (= field coords
+            // because the sketch frame is anchored at the field
+            // origin), so they line up naturally.
+            ForEach(peerCursors, id: \.peerId) { entry in
+                PeerCursor(color: entry.color)
+                    .offset(
+                        x: entry.position.x - PeerCursor.dotSize / 2,
+                        y: entry.position.y - PeerCursor.dotSize / 2)
+                    .allowsHitTesting(false)
+            }
         }
     }
 
@@ -143,7 +185,61 @@ struct FieldView: View {
     }
 
     private var activeSketchBody: some View {
-        CanvasView(store: store)
+        ZStack {
+            CanvasView(
+                store: store,
+                documentId: documentId,
+                presence: presence,
+                tool: tool)
+            // Peers' in-progress strokes are drawn inside the
+            // active sketch frame because they're in sketch-local
+            // coordinates. Each is colored with the peer's
+            // identity color so multiple drawers stay
+            // distinguishable.
+            ForEach(peerLiveStrokes, id: \.peerId) { entry in
+                Canvas { ctx, _ in
+                    guard !entry.stroke.points.isEmpty else { return }
+                    ctx.stroke(
+                        FieldView.strokePath(for: entry.stroke.points),
+                        with: .color(entry.color),
+                        style: StrokeStyle(
+                            lineWidth: entry.stroke.width,
+                            lineCap: .round,
+                            lineJoin: .round))
+                }
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// Flattened list of all peers currently drawing on this board.
+    /// Filters by `lastDocumentId` so peers active on a different
+    /// board don't bleed into this one's overlay.
+    private var peerLiveStrokes: [PeerStrokeEntry] {
+        let boardId = documentId.id
+        return presence.peers.compactMap { (peerId, state) in
+            guard let stroke = state.liveStroke,
+                  state.lastDocumentId == boardId
+            else { return nil }
+            return PeerStrokeEntry(
+                peerId: peerId,
+                stroke: stroke,
+                color: state.color)
+        }
+    }
+
+    /// Flattened list of peer cursors (in field coords).
+    private var peerCursors: [PeerCursorEntry] {
+        let boardId = documentId.id
+        return presence.peers.compactMap { (peerId, state) in
+            guard let cursor = state.cursor,
+                  state.lastDocumentId == boardId
+            else { return nil }
+            return PeerCursorEntry(
+                peerId: peerId,
+                position: cursor,
+                color: state.color)
+        }
     }
 
     // MARK: - Grid
@@ -264,6 +360,77 @@ struct FieldView: View {
         pan = CGSize(
             width: (size.width - Self.sketchSize.width) / 2,
             height: (size.height - Self.sketchSize.height) / 2)
+    }
+}
+
+// MARK: - Presence overlays
+
+private struct PeerStrokeEntry {
+    let peerId: String
+    let stroke: PeerLiveStroke
+    let color: Color
+}
+
+private struct PeerCursorEntry {
+    let peerId: String
+    let position: CGPoint
+    let color: Color
+}
+
+/// The little colored dot we render at a peer's reported cursor
+/// position. Kept small and shadowless so it doesn't fight with
+/// the sketch content underneath.
+private struct PeerCursor: View {
+    let color: Color
+    static let dotSize: CGFloat = 12
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: Self.dotSize, height: Self.dotSize)
+            .overlay(
+                Circle()
+                    .stroke(Color.white, lineWidth: 1.5))
+    }
+}
+
+extension FieldView {
+    /// Shared midpoint-quadratic smoothing — same algorithm
+    /// `CanvasView` uses for its render path. Lifted to a static
+    /// so peer-stroke rendering doesn't have to duplicate it.
+    fileprivate static func strokePath(for points: [Point]) -> Path {
+        var path = Path()
+        guard let first = points.first else { return path }
+        let p0 = CGPoint(x: first.x, y: first.y)
+        path.move(to: p0)
+
+        if points.count == 1 {
+            path.addLine(to: CGPoint(x: p0.x + 0.01, y: p0.y))
+            return path
+        }
+        if points.count == 2 {
+            let p1 = CGPoint(x: points[1].x, y: points[1].y)
+            path.addLine(to: p1)
+            return path
+        }
+
+        let firstMid = midpoint(
+            CGPoint(x: points[0].x, y: points[0].y),
+            CGPoint(x: points[1].x, y: points[1].y))
+        path.addLine(to: firstMid)
+        for i in 1..<(points.count - 1) {
+            let ctrl = CGPoint(x: points[i].x, y: points[i].y)
+            let nextMid = midpoint(
+                ctrl,
+                CGPoint(x: points[i + 1].x, y: points[i + 1].y))
+            path.addQuadCurve(to: nextMid, control: ctrl)
+        }
+        let last = points[points.count - 1]
+        path.addLine(to: CGPoint(x: last.x, y: last.y))
+        return path
+    }
+
+    fileprivate static func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
+        CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
     }
 }
 

@@ -18,16 +18,19 @@ struct BoardOpenView: View {
     @State private var store: BoardStore?
     @State private var loadError: String?
     @State private var showShareSheet = false
+    @State private var tool: DrawingTool = .pen
 
     var body: some View {
         Group {
-            if let store {
-                FieldView(store: store)
+            if let store, let summary = library.boards.first(where: { $0.id == boardId }) {
+                FieldView(
+                    store: store,
+                    documentId: summary.documentId,
+                    presence: library.presence,
+                    tool: $tool)
                     .toolbar { toolbar(for: store) }
                     .sheet(isPresented: $showShareSheet) {
-                        if let summary = library.boards.first(where: { $0.id == boardId }) {
-                            ShareBoardSheet(summary: summary)
-                        }
+                        ShareBoardSheet(summary: summary)
                     }
             } else if let loadError {
                 ContentUnavailableView(
