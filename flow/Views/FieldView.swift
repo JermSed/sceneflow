@@ -125,12 +125,14 @@ struct FieldView: View {
     /// every onChanged call.
     @State private var pinchStartPan: CGSize?
 
-    /// Location (in FieldView's local coords) where the user
-    /// double-clicked to open the quick-actions menu. Non-nil =
-    /// the menu is open; we also keep this around so the
-    /// "Comment here" / "Text here" / "Paste" actions know
-    /// where to drop their result.
-    @State private var quickActionsLocation: CGPoint?
+    /// Last cursor position (in FieldView local coords) we
+    /// observed via `.onContinuousHover`. Used so the system
+    /// right-click context menu's "Comment here" / "Text here"
+    /// can still place at the cursor — `.contextMenu` doesn't
+    /// give us the click location directly, so we track it via
+    /// hover instead. iOS / iPad touch has no hover; on those
+    /// platforms the menu actions fall back to viewport center.
+    @State private var lastHoverLocation: CGPoint?
 
     /// Last container size we observed via GeometryReader. Captured
     /// so capture-placement can compute the viewport center in
@@ -155,13 +157,32 @@ struct FieldView: View {
         GeometryReader { geo in
             ZStack {
                 // 1. Backdrop. Pan-gesture target so taps on empty
-                //    field pan the whole plane. Double-click here
-                //    opens the quick-actions menu at the click
-                //    location, like a right-click menu in Figma.
+                //    field pan the whole plane. Right-click /
+                //    long-press shows a system context menu via
+                //    `.contextMenu` with the Figma-style "drop
+                //    something here" shortcuts.
                 Color(red: 0.91, green: 0.91, blue: 0.93)
                     .contentShape(Rectangle())
-                    .onTapGesture(count: 2, coordinateSpace: .local) { loc in
-                        quickActionsLocation = loc
+                    .onContinuousHover(coordinateSpace: .local) { phase in
+                        if case .active(let loc) = phase {
+                            lastHoverLocation = loc
+                        }
+                    }
+                    .contextMenu {
+                        Button {
+                            performQuickAction(
+                                at: lastHoverLocation ?? viewportCenterLocal,
+                                action: .comment)
+                        } label: {
+                            Label("Comment here", systemImage: "text.bubble")
+                        }
+                        Button {
+                            performQuickAction(
+                                at: lastHoverLocation ?? viewportCenterLocal,
+                                action: .text)
+                        } label: {
+                            Label("Text here", systemImage: "textformat")
+                        }
                     }
                     .gesture(panGesture)
 
@@ -203,29 +224,6 @@ struct FieldView: View {
                         }
                 }
 
-                // Quick-actions floating menu, anchored at the
-                // double-click location. The clear background
-                // catches taps anywhere else and dismisses the
-                // menu, mirroring how popovers behave on macOS.
-                if let location = quickActionsLocation {
-                    Color.black.opacity(0.001)
-                        .contentShape(Rectangle())
-                        .onTapGesture { quickActionsLocation = nil }
-                    QuickActionsMenu(
-                        onAddComment: {
-                            performQuickAction(at: location, action: .comment)
-                        },
-                        onAddText: {
-                            performQuickAction(at: location, action: .text)
-                        },
-                        onDismiss: { quickActionsLocation = nil })
-                        // Anchor the card so its top-left lands
-                        // at the click; nudged down/right so it
-                        // doesn't sit directly under the cursor.
-                        .position(
-                            x: location.x + 95,
-                            y: location.y + 70)
-                }
             }
             .onAppear {
                 containerSize = geo.size
@@ -774,8 +772,6 @@ struct FieldView: View {
     private enum QuickAction { case comment, text }
 
     private func performQuickAction(at localPoint: CGPoint, action: QuickAction) {
-        defer { quickActionsLocation = nil }
-
         let fieldX = (localPoint.x - currentPan.width) / currentScale
         let fieldY = (localPoint.y - currentPan.height) / currentScale
 
@@ -785,6 +781,13 @@ struct FieldView: View {
         case .text:
             placeTextInField(at: CGPoint(x: fieldX, y: fieldY))
         }
+    }
+
+    /// Center of the field view in its own local coords. Used
+    /// as a fallback when right-click happens without a known
+    /// hover position (touch devices).
+    private var viewportCenterLocal: CGPoint {
+        CGPoint(x: containerSize.width / 2, y: containerSize.height / 2)
     }
 
     private func placeCommentInField(at fieldPoint: CGPoint) {
