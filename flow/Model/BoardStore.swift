@@ -35,8 +35,8 @@ import Automerge
 /// operation (a delete, a re-add, a re-capture), and their own
 /// undo histories are independent of ours.
 enum UndoableAction: Sendable {
-    case strokeAdded(Stroke)
-    case strokeRemoved(Stroke)
+    case strokeAdded(Stroke, target: EditTarget)
+    case strokeRemoved(Stroke, target: EditTarget)
     case snapshotCaptured(snapshot: Snapshot, restoredStrokes: [Stroke])
     case snapshotMoved(id: UUID, from: CGPoint, to: CGPoint)
 }
@@ -117,17 +117,45 @@ final class BoardStore: ObservableObject {
         try board.appendPoint(to: handle, point)
     }
 
-    func commitStroke(_ stroke: Stroke) throws {
-        try board.commitStroke(stroke)
-        push(.strokeAdded(stroke))
+    func commitStroke(_ stroke: Stroke, to target: EditTarget = .activeSketch) throws {
+        switch target {
+        case .activeSketch:
+            try board.commitStroke(stroke)
+        case .snapshot(let snapshotId):
+            try board.commitStrokeToSnapshot(snapshotId: snapshotId, stroke: stroke)
+        }
+        push(.strokeAdded(stroke, target: target))
     }
 
-    func removeActiveStroke(id: UUID) throws {
+    func removeStroke(id: UUID, from target: EditTarget = .activeSketch) throws {
         // Capture the stroke before deleting so undo can put it
         // back exactly as it was.
-        let removed = canvas.activeSketch.strokes.first(where: { $0.id == id })
-        try board.removeActiveStroke(id: id)
-        if let removed { push(.strokeRemoved(removed)) }
+        let removed = strokes(in: target).first(where: { $0.id == id })
+        switch target {
+        case .activeSketch:
+            try board.removeActiveStroke(id: id)
+        case .snapshot(let snapshotId):
+            try board.removeStrokeFromSnapshot(snapshotId: snapshotId, strokeId: id)
+        }
+        if let removed { push(.strokeRemoved(removed, target: target)) }
+    }
+
+    /// Back-compat shim — callers that still pass no target erase
+    /// from the active sketch.
+    func removeActiveStroke(id: UUID) throws {
+        try removeStroke(id: id, from: .activeSketch)
+    }
+
+    /// Current strokes for a given target. View code uses this so
+    /// CanvasView can switch between rendering the active sketch
+    /// and rendering a snapshot's interior with the same code.
+    func strokes(in target: EditTarget) -> [Stroke] {
+        switch target {
+        case .activeSketch:
+            return canvas.activeSketch.strokes
+        case .snapshot(let id):
+            return canvas.snapshots.first(where: { $0.id == id })?.strokes ?? []
+        }
     }
 
     @discardableResult
@@ -189,10 +217,10 @@ final class BoardStore: ObservableObject {
     private func apply(_ action: UndoableAction) {
         do {
             switch action {
-            case .strokeAdded(let stroke):
-                try board.commitStroke(stroke)
-            case .strokeRemoved(let stroke):
-                try board.removeActiveStroke(id: stroke.id)
+            case .strokeAdded(let stroke, let target):
+                try doCommit(stroke, to: target)
+            case .strokeRemoved(let stroke, let target):
+                try doRemove(strokeId: stroke.id, from: target)
             case .snapshotCaptured(let snapshot, _):
                 // The restored strokes are already in the active
                 // sketch (we undid the capture by putting them
@@ -212,10 +240,10 @@ final class BoardStore: ObservableObject {
     private func applyInverse(of action: UndoableAction) {
         do {
             switch action {
-            case .strokeAdded(let stroke):
-                try board.removeActiveStroke(id: stroke.id)
-            case .strokeRemoved(let stroke):
-                try board.commitStroke(stroke)
+            case .strokeAdded(let stroke, let target):
+                try doRemove(strokeId: stroke.id, from: target)
+            case .strokeRemoved(let stroke, let target):
+                try doCommit(stroke, to: target)
             case .snapshotCaptured(let snapshot, let restored):
                 try board.removeSnapshot(id: snapshot.id)
                 for stroke in restored {
@@ -226,6 +254,26 @@ final class BoardStore: ObservableObject {
             }
         } catch {
             assertionFailure("undo failed: \(error)")
+        }
+    }
+
+    /// Pure-doc commit (no undo push) — used by undo/redo paths.
+    private func doCommit(_ stroke: Stroke, to target: EditTarget) throws {
+        switch target {
+        case .activeSketch:
+            try board.commitStroke(stroke)
+        case .snapshot(let id):
+            try board.commitStrokeToSnapshot(snapshotId: id, stroke: stroke)
+        }
+    }
+
+    /// Pure-doc remove (no undo push) — used by undo/redo paths.
+    private func doRemove(strokeId: UUID, from target: EditTarget) throws {
+        switch target {
+        case .activeSketch:
+            try board.removeActiveStroke(id: strokeId)
+        case .snapshot(let id):
+            try board.removeStrokeFromSnapshot(snapshotId: id, strokeId: strokeId)
         }
     }
 }

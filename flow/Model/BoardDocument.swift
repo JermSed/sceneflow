@@ -273,6 +273,55 @@ final class BoardDocument {
         }
     }
 
+    /// Append a finished stroke to an existing snapshot's strokes
+    /// list. Used when editing a captured snapshot directly.
+    /// No-op if the snapshot can't be found (e.g. a peer just
+    /// deleted it under us — we'd rather drop the edit than
+    /// re-resurrect a tombstoned snapshot).
+    func commitStrokeToSnapshot(snapshotId: UUID, stroke: Stroke) throws {
+        guard let strokesList = try snapshotStrokesId(for: snapshotId) else { return }
+        let endIndex = doc.length(obj: strokesList)
+        try writeStroke(into: strokesList, at: endIndex, stroke: stroke)
+    }
+
+    /// Erase a stroke from an existing snapshot. Same scan-by-id
+    /// pattern as `removeActiveStroke`.
+    func removeStrokeFromSnapshot(snapshotId: UUID, strokeId: UUID) throws {
+        guard let strokesList = try snapshotStrokesId(for: snapshotId) else { return }
+        let count = doc.length(obj: strokesList)
+        let target = strokeId.uuidString
+        for i in 0..<count {
+            guard case let .Object(strokeMap, .Map) = try doc.get(obj: strokesList, index: i)
+            else { continue }
+            guard case let .Scalar(.String(idString)) = try doc.get(obj: strokeMap, key: "id")
+            else { continue }
+            if idString == target {
+                try doc.delete(obj: strokesList, index: i)
+                return
+            }
+        }
+    }
+
+    /// Locate the `strokes` list ObjId inside a snapshot by id.
+    /// Returns nil if no snapshot with that id is in the doc.
+    private func snapshotStrokesId(for snapshotId: UUID) throws -> ObjId? {
+        let snapshotsList = try snapshotsListId()
+        let count = doc.length(obj: snapshotsList)
+        let target = snapshotId.uuidString
+        for i in 0..<count {
+            guard case let .Object(snapMap, .Map) = try doc.get(obj: snapshotsList, index: i)
+            else { continue }
+            guard case let .Scalar(.String(idString)) = try doc.get(obj: snapMap, key: "id")
+            else { continue }
+            if idString == target {
+                guard case let .Object(strokesId, .List) = try doc.get(obj: snapMap, key: "strokes")
+                else { return nil }
+                return strokesId
+            }
+        }
+        return nil
+    }
+
     /// Delete a snapshot from the spatial field by id. Used by
     /// the undo path for `captureSnapshot`. Idempotent: missing
     /// ids are a no-op.

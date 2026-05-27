@@ -59,6 +59,12 @@ struct FieldView: View {
     /// reveals the frame; otherwise the field shows snapshots only.
     @Binding var sketchOpenedLocally: Bool
 
+    /// Snapshot currently being edited, if any. Set by tapping
+    /// a snapshot tile; cleared by tapping a "Done" affordance
+    /// on the edited tile. When set, the tool pill shows and
+    /// drawing/erasing route to that snapshot's strokes list.
+    @State private var editingSnapshotId: UUID?
+
     /// Logical size of the active sketch and of each snapshot tile.
     static let sketchSize = CGSize(width: 800, height: 600)
 
@@ -106,9 +112,10 @@ struct FieldView: View {
         // disappeared on iPad.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             // The drawing tool pill only makes sense when there's
-            // a sketch surface to act on. Hide it when the field
-            // is showing snapshots only.
-            if isSketchVisible {
+            // SOME drawing surface to act on — either the active
+            // sketch is visible, or the user is editing a snapshot.
+            // Hide it when the field is read-only-arranging.
+            if hasEditableSurface {
                 ToolbarPill(tool: $tool, color: $color, width: $width)
                     .padding(.bottom, 12)
                     .padding(.top, 8)
@@ -116,13 +123,28 @@ struct FieldView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: isSketchVisible)
+        .animation(.easeInOut(duration: 0.18), value: hasEditableSurface)
+        // If a snapshot the user was editing gets removed by a
+        // peer (delete-snapshot, future feature), drop the
+        // editing-id so the tool pill doesn't linger pointing at
+        // nothing.
+        .onChange(of: store.canvas.snapshots.map(\.id)) { _, ids in
+            if let editing = editingSnapshotId, !ids.contains(editing) {
+                editingSnapshotId = nil
+            }
+        }
     }
 
     /// Single source of truth for "is the active sketch on screen
     /// right now". OR-ed because either signal is enough.
     private var isSketchVisible: Bool {
         sketchOpenedLocally || !store.canvas.activeSketch.strokes.isEmpty
+    }
+
+    /// Either the sketch is open OR a snapshot is being edited
+    /// — anything that needs the bottom tool pill.
+    private var hasEditableSurface: Bool {
+        isSketchVisible || editingSnapshotId != nil
     }
 
     // MARK: - Transformed content
@@ -154,16 +176,10 @@ struct FieldView: View {
 
             // Captured snapshots.
             ForEach(Array(store.canvas.snapshots.enumerated()), id: \.element.id) { idx, snap in
-                frame(
-                    title: "Snapshot \(idx + 1)",
-                    titleColor: .secondary,
-                    isActive: false,
-                    content: { SnapshotTileView(snapshot: snap) }
-                )
-                .offset(
-                    x: snap.x + draggingOffset(for: snap.id).width,
-                    y: snap.y + draggingOffset(for: snap.id).height)
-                .gesture(dragGesture(for: snap))
+                snapshotFrame(index: idx, snapshot: snap)
+                    .offset(
+                        x: snap.x + draggingOffset(for: snap.id).width,
+                        y: snap.y + draggingOffset(for: snap.id).height)
             }
 
             // Peer cursors. Drawn inside the transformed layer so
@@ -218,6 +234,7 @@ struct FieldView: View {
         ZStack {
             CanvasView(
                 store: store,
+                target: .activeSketch,
                 documentId: documentId,
                 presence: presence,
                 tool: tool,
@@ -241,6 +258,80 @@ struct FieldView: View {
                 }
                 .allowsHitTesting(false)
             }
+        }
+    }
+
+    /// One snapshot, in either view or edit mode. View mode is
+    /// the read-only tile + drag-to-reposition + tap-to-edit;
+    /// edit mode swaps in a `CanvasView` targeting this snapshot
+    /// and exposes a Done button in the title row.
+    ///
+    /// Splitting drag (move) and tap (edit) is the usual SwiftUI
+    /// trick of attaching `.onTapGesture` separately from the
+    /// drag — short presses fire the tap, longer movements fire
+    /// the drag. We only attach the drag gesture when NOT editing
+    /// so the drawing surface inside the tile owns the touch.
+    @ViewBuilder
+    private func snapshotFrame(index: Int, snapshot: Snapshot) -> some View {
+        let isEditing = editingSnapshotId == snapshot.id
+        let title = "Snapshot \(index + 1)"
+        ZStack(alignment: .topLeading) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(isEditing ? Color.accentColor : Color.secondary)
+                if isEditing {
+                    Button {
+                        editingSnapshotId = nil
+                    } label: {
+                        Text("Done")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.accentColor))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .offset(y: -Self.titleHeight)
+
+            snapshotBody(snapshot: snapshot, isEditing: isEditing)
+                .frame(width: Self.sketchSize.width, height: Self.sketchSize.height)
+                .background(Color.white)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(
+                            isEditing ? Color.accentColor.opacity(0.55) : Color.black.opacity(0.06),
+                            lineWidth: isEditing ? 1.5 : 0.5))
+                .shadow(color: .black.opacity(0.10),
+                        radius: isEditing ? 14 : 10,
+                        x: 0, y: 4)
+                .onTapGesture {
+                    // Tap toggles edit mode for this snapshot.
+                    // Tap-to-deselect is the Done button's job.
+                    if !isEditing {
+                        editingSnapshotId = snapshot.id
+                    }
+                }
+                .gesture(isEditing ? nil : dragGesture(for: snapshot))
+        }
+    }
+
+    @ViewBuilder
+    private func snapshotBody(snapshot: Snapshot, isEditing: Bool) -> some View {
+        if isEditing {
+            CanvasView(
+                store: store,
+                target: .snapshot(snapshot.id),
+                documentId: documentId,
+                presence: presence,
+                tool: tool,
+                color: color,
+                width: width)
+        } else {
+            SnapshotTileView(snapshot: snapshot)
         }
     }
 

@@ -66,7 +66,11 @@ struct Point { var x, y, pressure: Double }
 Design rules baked into this model:
 - Strokes and points are append-only lists → concurrent drawing merges cleanly.
 - Snapshot x/y/z are scalars → rearranging resolves as last-write-wins.
-- Snapshots are immutable once captured (they stop growing the change history).
+- Snapshots are editable across all peers — tap a snapshot to draw on it; the
+  same merge semantics that protect the active sketch apply to each snapshot's
+  strokes list. (Earlier drafts of this file called snapshots immutable; we
+  changed that because cinematic planning routinely needs revisions of a beat
+  after the initial sketch, and the doc model already supported it.)
 - Always capture `pressure` even before rendering variable-width strokes.
 - Batch pen points into a stroke; never write one Automerge change per pen point.
 

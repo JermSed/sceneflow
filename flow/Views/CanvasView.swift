@@ -39,6 +39,12 @@ struct CanvasView: View {
 
     @ObservedObject var store: BoardStore
 
+    /// Which frame the user is currently drawing into. Same
+    /// view handles both the active sketch and editing an
+    /// existing snapshot — only the source/destination list
+    /// differs.
+    let target: EditTarget
+
     /// The active board's sync identity. Needed so presence
     /// messages get tagged per-board, and so receivers can filter
     /// out messages for boards they're not viewing.
@@ -93,10 +99,16 @@ struct CanvasView: View {
     private let broadcastInterval: TimeInterval = 1.0 / 30
 
 
+    /// Strokes for the current edit target — active sketch's
+    /// strokes or a snapshot's strokes, depending.
+    private var committedStrokes: [Stroke] {
+        store.strokes(in: target)
+    }
+
     var body: some View {
         Canvas { ctx, _ in
             // 1. Already-committed strokes from the doc.
-            for stroke in store.canvas.activeSketch.strokes {
+            for stroke in committedStrokes {
                 guard !stroke.points.isEmpty else { continue }
                 ctx.stroke(
                     Self.path(for: stroke.points),
@@ -139,9 +151,9 @@ struct CanvasView: View {
         // When the just-committed stroke lands in the doc-derived
         // canvas, drop the local buffer. We key this on stroke
         // count rather than identity equality so it's cheap.
-        .onChange(of: store.canvas.activeSketch.strokes.count) {
+        .onChange(of: committedStrokes.count) {
             if let id = pendingStrokeId,
-               store.canvas.activeSketch.strokes.contains(where: { $0.id == id }) {
+               committedStrokes.contains(where: { $0.id == id }) {
                 inProgressPoints = []
                 pendingStrokeId = nil
             }
@@ -164,7 +176,7 @@ struct CanvasView: View {
     /// same stroke twice in the same frame.
     private var showLiveOverlay: Bool {
         guard let id = pendingStrokeId else { return true }
-        return !store.canvas.activeSketch.strokes.contains(where: { $0.id == id })
+        return !committedStrokes.contains(where: { $0.id == id })
     }
 
     // MARK: - Gesture
@@ -231,13 +243,13 @@ struct CanvasView: View {
         // erasure (vs. splitting on the erased segment) is the
         // simpler model and matches what most sketching apps
         // do at small radii.
-        let hits = store.canvas.activeSketch.strokes.filter { stroke in
+        let hits = committedStrokes.filter { stroke in
             stroke.points.contains { pt in
                 hypot(pt.x - p.x, pt.y - p.y) < radius
             }
         }
         for stroke in hits {
-            try? store.removeActiveStroke(id: stroke.id)
+            try? store.removeStroke(id: stroke.id, from: target)
         }
     }
 
@@ -284,7 +296,7 @@ struct CanvasView: View {
             width: width,
             points: inProgressPoints)
         do {
-            try store.commitStroke(stroke)
+            try store.commitStroke(stroke, to: target)
             // Tell peers to drop their copy of the in-progress
             // overlay — the real stroke is on its way via doc
             // sync and will arrive shortly. Sending the same id
