@@ -558,7 +558,11 @@ struct FieldView: View {
     }
 
     private var panGesture: some Gesture {
-        DragGesture()
+        // Same `.global` rationale as the snapshot drag — keep
+        // translations unambiguously in screen pts. The pan
+        // doesn't divide by scale because we're moving the field
+        // itself in screen-space.
+        DragGesture(coordinateSpace: .global)
             .onChanged { value in
                 pendingPan = value.translation
             }
@@ -588,7 +592,19 @@ struct FieldView: View {
     }
 
     private func dragGesture(for snapshot: Snapshot) -> some Gesture {
-        DragGesture()
+        // Pin the coordinate space to `.global` so `value.translation`
+        // is unambiguously in screen points regardless of whatever
+        // .scaleEffect / .offset is wrapping us. SwiftUI's default
+        // `.local` coord space behaves inconsistently inside a
+        // scaled parent (sometimes screen-space, sometimes inner
+        // scaled-space) — that ambiguity was the actual cause of
+        // the "snapshot flies off the screen" behavior: with scale
+        // 1.0 the translation was screen pts (works), with any
+        // other scale we were dividing the wrong quantity by the
+        // scale and ending up with grossly amplified field-pt
+        // movement. `.global` removes the ambiguity; we always
+        // divide screen-pts by scale to get field-pts.
+        DragGesture(coordinateSpace: .global)
             .onChanged { value in
                 draggingSnapshot = (snapshot.id, value.translation)
             }
