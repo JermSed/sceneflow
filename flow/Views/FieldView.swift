@@ -125,6 +125,13 @@ struct FieldView: View {
     /// every onChanged call.
     @State private var pinchStartPan: CGSize?
 
+    /// Location (in FieldView's local coords) where the user
+    /// double-clicked to open the quick-actions menu. Non-nil =
+    /// the menu is open; we also keep this around so the
+    /// "Comment here" / "Text here" / "Paste" actions know
+    /// where to drop their result.
+    @State private var quickActionsLocation: CGPoint?
+
     /// Last container size we observed via GeometryReader. Captured
     /// so capture-placement can compute the viewport center in
     /// field coords without going through the GeometryReader proxy
@@ -148,9 +155,14 @@ struct FieldView: View {
         GeometryReader { geo in
             ZStack {
                 // 1. Backdrop. Pan-gesture target so taps on empty
-                //    field pan the whole plane.
+                //    field pan the whole plane. Double-click here
+                //    opens the quick-actions menu at the click
+                //    location, like a right-click menu in Figma.
                 Color(red: 0.91, green: 0.91, blue: 0.93)
                     .contentShape(Rectangle())
+                    .onTapGesture(count: 2, coordinateSpace: .local) { loc in
+                        quickActionsLocation = loc
+                    }
                     .gesture(panGesture)
 
                 // 2. Everything that lives "on" the plane:
@@ -189,6 +201,30 @@ struct FieldView: View {
                             placeComment(atGlobal: location, in: geo.frame(in: .global))
                             isPlacingComment = false
                         }
+                }
+
+                // Quick-actions floating menu, anchored at the
+                // double-click location. The clear background
+                // catches taps anywhere else and dismisses the
+                // menu, mirroring how popovers behave on macOS.
+                if let location = quickActionsLocation {
+                    Color.black.opacity(0.001)
+                        .contentShape(Rectangle())
+                        .onTapGesture { quickActionsLocation = nil }
+                    QuickActionsMenu(
+                        onAddComment: {
+                            performQuickAction(at: location, action: .comment)
+                        },
+                        onAddText: {
+                            performQuickAction(at: location, action: .text)
+                        },
+                        onDismiss: { quickActionsLocation = nil })
+                        // Anchor the card so its top-left lands
+                        // at the click; nudged down/right so it
+                        // doesn't sit directly under the cursor.
+                        .position(
+                            x: location.x + 95,
+                            y: location.y + 70)
                 }
             }
             .onAppear {
@@ -728,6 +764,51 @@ struct FieldView: View {
                 }
                 draggingSnapshot = nil
             }
+    }
+
+    /// Quick-actions dispatch — invoked when the user picks an
+    /// option in the floating menu. The action target location
+    /// is the double-click point (in FieldView-local coords).
+    /// Each branch converts to field coords and runs the same
+    /// helper the placement tools use.
+    private enum QuickAction { case comment, text }
+
+    private func performQuickAction(at localPoint: CGPoint, action: QuickAction) {
+        defer { quickActionsLocation = nil }
+
+        let fieldX = (localPoint.x - currentPan.width) / currentScale
+        let fieldY = (localPoint.y - currentPan.height) / currentScale
+
+        switch action {
+        case .comment:
+            placeCommentInField(at: CGPoint(x: fieldX, y: fieldY))
+        case .text:
+            placeTextInField(at: CGPoint(x: fieldX, y: fieldY))
+        }
+    }
+
+    private func placeCommentInField(at fieldPoint: CGPoint) {
+        do {
+            let comment = try store.addComment(
+                at: Double(fieldPoint.x), y: Double(fieldPoint.y),
+                authorPeerId: presence.localPeerId,
+                authorName: presence.localDisplayName,
+                text: "")
+            openedCommentId = comment.id
+            commentEditDrafts[comment.id] = ""
+        } catch {
+            assertionFailure("addComment failed: \(error)")
+        }
+    }
+
+    private func placeTextInField(at fieldPoint: CGPoint) {
+        do {
+            let note = try store.addText(
+                at: Double(fieldPoint.x), y: Double(fieldPoint.y), text: "")
+            beginTextEdit(note)
+        } catch {
+            assertionFailure("placeText failed: \(error)")
+        }
     }
 
     /// Place a comment pin at a specific click location, like
