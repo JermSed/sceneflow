@@ -126,6 +126,9 @@ final class BoardDocument {
             if try doc.get(obj: .ROOT, key: "comments") == nil {
                 _ = try doc.putObject(obj: .ROOT, key: "comments", ty: .List)
             }
+            if try doc.get(obj: .ROOT, key: "connectors") == nil {
+                _ = try doc.putObject(obj: .ROOT, key: "connectors", ty: .List)
+            }
             // Sanity-check that the existing tree decodes to our model.
             _ = try AutomergeDecoder(doc: doc).decode(CanvasDoc.self)
         }
@@ -142,6 +145,7 @@ final class BoardDocument {
         _ = try doc.putObject(obj: .ROOT, key: "texts", ty: .List)
         _ = try doc.putObject(obj: .ROOT, key: "images", ty: .List)
         _ = try doc.putObject(obj: .ROOT, key: "comments", ty: .List)
+        _ = try doc.putObject(obj: .ROOT, key: "connectors", ty: .List)
     }
 
     // MARK: - Snapshotting the Swift value
@@ -246,7 +250,8 @@ final class BoardDocument {
     @discardableResult
     func captureSnapshotUsing(
         strokes: [Stroke],
-        at x: Double, y: Double, z: Int, id: UUID
+        at x: Double, y: Double, z: Int, id: UUID,
+        width: Double = 800, height: Double = 600
     ) throws -> UUID {
         let snapshotsList = try snapshotsListId()
         let endIndex = doc.length(obj: snapshotsList)
@@ -255,6 +260,8 @@ final class BoardDocument {
         try doc.put(obj: snapshotMap, key: "x", value: .F64(x))
         try doc.put(obj: snapshotMap, key: "y", value: .F64(y))
         try doc.put(obj: snapshotMap, key: "z", value: .Int(Int64(z)))
+        try doc.put(obj: snapshotMap, key: "width", value: .F64(width))
+        try doc.put(obj: snapshotMap, key: "height", value: .F64(height))
         let snapshotStrokes = try doc.putObject(obj: snapshotMap, key: "strokes", ty: .List)
         for (i, stroke) in strokes.enumerated() {
             try writeStroke(into: snapshotStrokes, at: UInt64(i), stroke: stroke)
@@ -349,6 +356,27 @@ final class BoardDocument {
         return nil
     }
 
+    /// Insert a pre-built `Snapshot` value into the spatial
+    /// field. Used by undo-of-delete and any future "duplicate
+    /// snapshot" affordance — both want to put a fully-formed
+    /// snapshot into the doc without going through the
+    /// capture-from-active path.
+    func addSnapshot(_ snapshot: Snapshot) throws {
+        let list = try snapshotsListId()
+        let endIndex = doc.length(obj: list)
+        let map = try doc.insertObject(obj: list, index: endIndex, ty: .Map)
+        try doc.put(obj: map, key: "id", value: .String(snapshot.id.uuidString))
+        try doc.put(obj: map, key: "x", value: .F64(snapshot.x))
+        try doc.put(obj: map, key: "y", value: .F64(snapshot.y))
+        try doc.put(obj: map, key: "z", value: .Int(Int64(snapshot.z)))
+        try doc.put(obj: map, key: "width", value: .F64(snapshot.width))
+        try doc.put(obj: map, key: "height", value: .F64(snapshot.height))
+        let strokes = try doc.putObject(obj: map, key: "strokes", ty: .List)
+        for (i, stroke) in snapshot.strokes.enumerated() {
+            try writeStroke(into: strokes, at: UInt64(i), stroke: stroke)
+        }
+    }
+
     /// Delete a snapshot from the spatial field by id. Used by
     /// the undo path for `captureSnapshot`. Idempotent: missing
     /// ids are a no-op.
@@ -366,6 +394,29 @@ final class BoardDocument {
                 return
             }
         }
+    }
+
+    /// Resize a snapshot's frame. Strokes inside don't auto-
+    /// scale — the new bounds just clip / reveal the canvas.
+    func resizeSnapshot(id: UUID, to width: Double, height: Double) throws {
+        let list = try snapshotsListId()
+        let count = doc.length(obj: list)
+        let target = id.uuidString
+        for i in 0..<count {
+            guard case let .Object(map, .Map) = try doc.get(obj: list, index: i) else { continue }
+            guard case let .Scalar(.String(idString)) = try doc.get(obj: map, key: "id") else { continue }
+            if idString == target {
+                try doc.put(obj: map, key: "width", value: .F64(width))
+                try doc.put(obj: map, key: "height", value: .F64(height))
+                return
+            }
+        }
+    }
+
+    func resizeImage(id: UUID, to width: Double, height: Double) throws {
+        guard let map = try findImageMap(id: id) else { return }
+        try doc.put(obj: map, key: "width", value: .F64(width))
+        try doc.put(obj: map, key: "height", value: .F64(height))
     }
 
     /// Reposition a snapshot in the spatial field. Last-write-wins on
@@ -511,6 +562,31 @@ final class BoardDocument {
         }
     }
 
+    // MARK: - Connectors
+
+    func addConnector(_ connector: Connector) throws {
+        let list = try connectorsListId()
+        let endIndex = doc.length(obj: list)
+        let map = try doc.insertObject(obj: list, index: endIndex, ty: .Map)
+        try doc.put(obj: map, key: "id", value: .String(connector.id.uuidString))
+        try doc.put(obj: map, key: "from", value: .String(connector.from.uuidString))
+        try doc.put(obj: map, key: "to", value: .String(connector.to.uuidString))
+    }
+
+    func removeConnector(id: UUID) throws {
+        let list = try connectorsListId()
+        let count = doc.length(obj: list)
+        let target = id.uuidString
+        for i in 0..<count {
+            guard case let .Object(map, .Map) = try doc.get(obj: list, index: i) else { continue }
+            guard case let .Scalar(.String(idString)) = try doc.get(obj: map, key: "id") else { continue }
+            if idString == target {
+                try doc.delete(obj: list, index: i)
+                return
+            }
+        }
+    }
+
     // MARK: - Internal helpers
 
     /// Write a `Stroke` value into an existing strokes list at `index`.
@@ -601,5 +677,11 @@ final class BoardDocument {
             if idString == target { return map }
         }
         return nil
+    }
+
+    private func connectorsListId() throws -> ObjId {
+        guard case let .Object(id, .List) = try doc.get(obj: .ROOT, key: "connectors")
+        else { throw BoardError.malformedDocument("root.connectors is not a list") }
+        return id
     }
 }

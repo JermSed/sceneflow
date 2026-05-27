@@ -63,6 +63,13 @@ struct Snapshot: Codable, Hashable, Identifiable, Sendable {
     var y: Double
     var z: Int
     var strokes: [Stroke]
+    /// Frame size in field-pts. Defaults match the historical
+    /// fixed sketch size so boards saved before resize was a
+    /// thing render exactly as they did. Strokes are stored in
+    /// sketch-local coords and don't auto-scale when the frame
+    /// resizes — the new bounds just clip / reveal the canvas.
+    var width: Double = 800
+    var height: Double = 600
 }
 
 /// A typed text note placed anywhere on the spatial field.
@@ -130,23 +137,41 @@ struct Comment: Codable, Hashable, Identifiable, Sendable {
     var isResolved: Bool
 }
 
+/// A line drawn between two snapshots, like an arrow in a
+/// storyboard. Stored as a pair of snapshot ids; the line
+/// follows whichever endpoints move because we look up their
+/// positions at render time.
+///
+/// Direction is "from → to" so a future arrowhead can render
+/// at the `to` end. The MVP draws an undirected line and
+/// ignores the order; the field is still authored as ordered
+/// so we don't have to migrate the model when we want arrows.
+struct Connector: Codable, Hashable, Identifiable, Sendable {
+    let id: UUID
+    var from: UUID
+    var to: UUID
+}
+
 /// The root of a board's Automerge document.
 ///
-/// New top-level lists (`texts`, `images`, `comments`) default
-/// to empty so boards saved before they existed still decode.
-/// The on-disk adopt path also seeds the underlying Automerge
-/// lists when they're absent — see `BoardDocument.init(adopting:)`.
+/// New top-level lists (`texts`, `images`, `comments`,
+/// `connectors`) default to empty so boards saved before they
+/// existed still decode. The on-disk adopt path also seeds the
+/// underlying Automerge lists when they're absent — see
+/// `BoardDocument.init(adopting:)`.
 struct CanvasDoc: Codable, Hashable, Sendable {
     var snapshots: [Snapshot]
     var activeSketch: Sketch
     var texts: [TextNote] = []
     var images: [ImageNote] = []
     var comments: [Comment] = []
+    var connectors: [Connector] = []
 
     static let empty = CanvasDoc(
         snapshots: [],
         activeSketch: .empty,
         texts: [],
         images: [],
-        comments: [])
+        comments: [],
+        connectors: [])
 }

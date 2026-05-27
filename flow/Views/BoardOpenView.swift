@@ -59,6 +59,15 @@ struct BoardOpenView: View {
     /// two are mutually exclusive — arming one disarms the other.
     @State private var isPlacingComment: Bool = false
 
+    /// Currently-selected object on the field, if any. Lifted
+    /// here so toolbar shortcuts (delete, future duplicate) can
+    /// act on the selection.
+    @State private var selection: FieldSelection? = nil
+
+    /// Connector-drawing mode. Same modal tool pattern as the
+    /// other placement tools.
+    @State private var isPlacingConnector: Bool = false
+
     var body: some View {
         Group {
             if let store, let summary = library.boards.first(where: { $0.id == boardId }) {
@@ -75,7 +84,9 @@ struct BoardOpenView: View {
                         addTextRequest: $addTextRequest,
                         addImageRequest: $addImageRequest,
                         isPlacingText: $isPlacingText,
-                        isPlacingComment: $isPlacingComment)
+                        isPlacingComment: $isPlacingComment,
+                        selection: $selection,
+                        isPlacingConnector: $isPlacingConnector)
 
                     // Slim banner that drops down from the top of
                     // the board when the sync socket isn't ready.
@@ -208,6 +219,28 @@ struct BoardOpenView: View {
             }
         }
 
+        // Hidden buttons that exist only to host keyboard
+        // shortcuts. Delete/Backspace removes the selected
+        // object; Escape clears selection / cancels modal tools.
+        ToolbarItem(placement: .navigation) {
+            Group {
+                Button("Delete") {
+                    deleteSelection(in: store)
+                }
+                .keyboardShortcut(.delete, modifiers: [])
+                .disabled(selection == nil)
+                Button("Escape") {
+                    isPlacingText = false
+                    isPlacingComment = false
+                    isPlacingConnector = false
+                    selection = nil
+                }
+                .keyboardShortcut(.escape, modifiers: [])
+            }
+            .hidden()
+            .frame(width: 0, height: 0)
+        }
+
         ToolbarItem(placement: .primaryAction) {
             PeerPill(
                 presence: library.presence,
@@ -257,58 +290,66 @@ struct BoardOpenView: View {
             .disabled(store.canvas.activeSketch.strokes.isEmpty)
         }
 
+        // Placement tools + paste + share grouped into one
+        // toolbar item to stay under SwiftUI's
+        // ToolbarContentBuilder ~10-item limit.
         ToolbarItem(placement: .primaryAction) {
-            // Figma-style placement: arm the tool, then the next
-            // click in the field places + enters edit mode.
-            Button {
-                if isPlacingComment { isPlacingComment = false }
-                isPlacingText.toggle()
-            } label: {
-                Image(systemName: "textformat")
-                    .foregroundStyle(isPlacingText ? Color.white : Color.primary)
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(isPlacingText ? Color.accentColor : Color.clear))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(isPlacingText ? "Cancel placing text" : "Place text")
-        }
+            HStack(spacing: 6) {
+                Button {
+                    if isPlacingComment { isPlacingComment = false }
+                    if isPlacingConnector { isPlacingConnector = false }
+                    isPlacingText.toggle()
+                } label: {
+                    Image(systemName: "textformat")
+                        .foregroundStyle(isPlacingText ? Color.white : Color.primary)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(isPlacingText ? Color.accentColor : Color.clear))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isPlacingText ? "Cancel placing text" : "Place text")
 
-        ToolbarItem(placement: .primaryAction) {
-            // Comment-placement tool — same modal pattern as
-            // text. Mutually exclusive with text so the user
-            // doesn't accidentally drop one wanting the other.
-            Button {
-                if isPlacingText { isPlacingText = false }
-                isPlacingComment.toggle()
-            } label: {
-                Image(systemName: "text.bubble")
-                    .foregroundStyle(isPlacingComment ? Color.white : Color.primary)
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(isPlacingComment ? Color.accentColor : Color.clear))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(isPlacingComment ? "Cancel placing comment" : "Place comment")
-        }
+                Button {
+                    if isPlacingText { isPlacingText = false }
+                    if isPlacingConnector { isPlacingConnector = false }
+                    isPlacingComment.toggle()
+                } label: {
+                    Image(systemName: "text.bubble")
+                        .foregroundStyle(isPlacingComment ? Color.white : Color.primary)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(isPlacingComment ? Color.accentColor : Color.clear))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isPlacingComment ? "Cancel placing comment" : "Place comment")
 
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                pasteFromClipboard()
-            } label: {
-                Label("Paste", systemImage: "doc.on.clipboard")
-            }
-            .keyboardShortcut("v", modifiers: .command)
-            .accessibilityLabel("Paste")
-        }
+                Button {
+                    if isPlacingText { isPlacingText = false }
+                    if isPlacingComment { isPlacingComment = false }
+                    isPlacingConnector.toggle()
+                } label: {
+                    Image(systemName: "arrow.right")
+                        .foregroundStyle(isPlacingConnector ? Color.white : Color.primary)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(isPlacingConnector ? Color.accentColor : Color.clear))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isPlacingConnector ? "Cancel connecting" : "Connect snapshots")
 
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                showShareSheet = true
-            } label: {
-                Label("Share", systemImage: "square.and.arrow.up")
+                Button { pasteFromClipboard() } label: {
+                    Image(systemName: "doc.on.clipboard")
+                }
+                .keyboardShortcut("v", modifiers: .command)
+                .accessibilityLabel("Paste")
+
+                Button { showShareSheet = true } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .accessibilityLabel("Share")
             }
         }
     }
@@ -321,6 +362,39 @@ struct BoardOpenView: View {
     // pan/scale to drop the new snapshot at the viewport center.
     // The toolbar button just toggles `captureRequest` and
     // FieldView's `.onChange` does the work.
+
+    /// Delete the currently-selected object via the store's
+    /// typed remove. Clears the selection on success so the
+    /// toolbar updates immediately.
+    private func deleteSelection(in store: BoardStore) {
+        guard let selection else { return }
+        do {
+            switch selection {
+            case .snapshot(let id):
+                // Removing a snapshot uses the existing
+                // removeSnapshot path on BoardDocument; we add
+                // a tiny BoardStore wrapper for it inline here
+                // because previously it was only reachable via
+                // undo of capture.
+                if let s = store.canvas.snapshots.first(where: { $0.id == id }) {
+                    // Push a snapshotCaptured-style entry to
+                    // make delete undoable: from the store's
+                    // POV "undo the delete" = "re-add the snapshot
+                    // with its strokes". For now we just remove
+                    // via the raw path; undo will be a follow-up.
+                    _ = s
+                }
+                try store.removeSelectedSnapshot(id: id)
+            case .text(let id):
+                try store.removeText(id: id)
+            case .image(let id):
+                try store.removeImage(id: id)
+            }
+            self.selection = nil
+        } catch {
+            assertionFailure("delete selection failed: \(error)")
+        }
+    }
 
     /// Read the system clipboard and dispatch into FieldView.
     /// Image wins over text — pasting a Finder-copied PNG with

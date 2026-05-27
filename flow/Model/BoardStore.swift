@@ -53,6 +53,11 @@ enum UndoableAction: Sendable {
     case commentMoved(id: UUID, from: CGPoint, to: CGPoint)
     case commentTextEdited(id: UUID, oldText: String, newText: String)
     case commentResolutionToggled(id: UUID, oldValue: Bool, newValue: Bool)
+    case snapshotResized(id: UUID, from: CGSize, to: CGSize)
+    case imageResized(id: UUID, from: CGSize, to: CGSize)
+    case snapshotDeleted(Snapshot)
+    case connectorAdded(Connector)
+    case connectorRemoved(Connector)
 }
 
 @MainActor
@@ -360,6 +365,51 @@ final class BoardStore: ObservableObject {
         if let removed { push(.commentRemoved(removed)) }
     }
 
+    func resizeSnapshot(id: UUID, to width: Double, height: Double) throws {
+        guard let snap = canvas.snapshots.first(where: { $0.id == id }) else { return }
+        let from = CGSize(width: snap.width, height: snap.height)
+        try board.resizeSnapshot(id: id, to: width, height: height)
+        refresh()
+        push(.snapshotResized(id: id, from: from, to: CGSize(width: width, height: height)))
+    }
+
+    func resizeImage(id: UUID, to width: Double, height: Double) throws {
+        guard let img = canvas.images.first(where: { $0.id == id }) else { return }
+        let from = CGSize(width: img.width, height: img.height)
+        try board.resizeImage(id: id, to: width, height: height)
+        refresh()
+        push(.imageResized(id: id, from: from, to: CGSize(width: width, height: height)))
+    }
+
+    // MARK: - Connectors
+
+    @discardableResult
+    func addConnector(from: UUID, to: UUID) throws -> Connector {
+        let connector = Connector(id: UUID(), from: from, to: to)
+        try board.addConnector(connector)
+        refresh()
+        push(.connectorAdded(connector))
+        return connector
+    }
+
+    func removeConnector(id: UUID) throws {
+        let removed = canvas.connectors.first(where: { $0.id == id })
+        try board.removeConnector(id: id)
+        refresh()
+        if let removed { push(.connectorRemoved(removed)) }
+    }
+
+    /// Delete a snapshot from the spatial field. Undo restores
+    /// it whole (via `snapshotDeleted` → `addSnapshot`); not
+    /// the same path as capture, which moves strokes into a
+    /// snapshot rather than just creating one.
+    func removeSelectedSnapshot(id: UUID) throws {
+        guard let snap = canvas.snapshots.first(where: { $0.id == id }) else { return }
+        try board.removeSnapshot(id: id)
+        refresh()
+        push(.snapshotDeleted(snap))
+    }
+
     func moveSnapshot(id: UUID, to x: Double, y: Double) throws {
         let from = canvas.snapshots.first(where: { $0.id == id })
             .map { CGPoint(x: $0.x, y: $0.y) }
@@ -453,6 +503,16 @@ final class BoardStore: ObservableObject {
                 try board.updateCommentText(id: id, text: newText)
             case .commentResolutionToggled(let id, _, let newValue):
                 try board.setCommentResolved(id: id, resolved: newValue)
+            case .snapshotResized(let id, _, let to):
+                try board.resizeSnapshot(id: id, to: to.width, height: to.height)
+            case .imageResized(let id, _, let to):
+                try board.resizeImage(id: id, to: to.width, height: to.height)
+            case .snapshotDeleted(let snap):
+                try board.removeSnapshot(id: snap.id)
+            case .connectorAdded(let connector):
+                try board.addConnector(connector)
+            case .connectorRemoved(let connector):
+                try board.removeConnector(id: connector.id)
             }
         } catch {
             assertionFailure("redo failed: \(error)")
@@ -498,6 +558,16 @@ final class BoardStore: ObservableObject {
                 try board.updateCommentText(id: id, text: oldText)
             case .commentResolutionToggled(let id, let oldValue, _):
                 try board.setCommentResolved(id: id, resolved: oldValue)
+            case .snapshotResized(let id, let from, _):
+                try board.resizeSnapshot(id: id, to: from.width, height: from.height)
+            case .imageResized(let id, let from, _):
+                try board.resizeImage(id: id, to: from.width, height: from.height)
+            case .snapshotDeleted(let snap):
+                try board.addSnapshot(snap)
+            case .connectorAdded(let connector):
+                try board.removeConnector(id: connector.id)
+            case .connectorRemoved(let connector):
+                try board.addConnector(connector)
             }
         } catch {
             assertionFailure("undo failed: \(error)")

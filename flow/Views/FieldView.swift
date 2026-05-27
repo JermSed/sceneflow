@@ -101,6 +101,20 @@ struct FieldView: View {
     /// floating text.
     @Binding var isPlacingComment: Bool
 
+    /// Currently-selected field object (snapshot / text /
+    /// image). Lifted to BoardOpenView so the toolbar can show
+    /// contextual actions and the keyboard shortcuts can act on
+    /// the selection.
+    @Binding var selection: FieldSelection?
+
+    /// Connector-drawing mode. While armed:
+    ///   • first tap on a snapshot remembers its id
+    ///   • next tap on a different snapshot creates the
+    ///     connector and exits the mode
+    /// Mutually exclusive with the text + comment placement
+    /// tools.
+    @Binding var isPlacingConnector: Bool
+
     /// Logical size of the active sketch and of each snapshot tile.
     static let sketchSize = CGSize(width: 800, height: 600)
 
@@ -134,6 +148,11 @@ struct FieldView: View {
     /// platforms the menu actions fall back to viewport center.
     @State private var lastHoverLocation: CGPoint?
 
+    /// First snapshot picked in connector-drawing mode. Nil
+    /// means we're waiting for the first pick; non-nil means
+    /// the next tapped snapshot completes the link.
+    @State private var connectorFirstId: UUID?
+
     /// Last container size we observed via GeometryReader. Captured
     /// so capture-placement can compute the viewport center in
     /// field coords without going through the GeometryReader proxy
@@ -160,9 +179,11 @@ struct FieldView: View {
                 //    field pan the whole plane. Right-click /
                 //    long-press shows a system context menu via
                 //    `.contextMenu` with the Figma-style "drop
-                //    something here" shortcuts.
+                //    something here" shortcuts. A single tap
+                //    here also clears any current selection.
                 Color(red: 0.91, green: 0.91, blue: 0.93)
                     .contentShape(Rectangle())
+                    .onTapGesture { selection = nil }
                     .onContinuousHover(coordinateSpace: .local) { phase in
                         if case .active(let loc) = phase {
                             lastHoverLocation = loc
@@ -401,6 +422,17 @@ struct FieldView: View {
                 .offset(x: sketchPosition.x, y: sketchPosition.y)
             }
 
+            // Connectors. Drawn before snapshots so the line
+            // sits behind the tiles' shadows rather than on top
+            // of them. They're recomputed on every body pass —
+            // cheap because the geometry is just two points per
+            // connector — so moving a snapshot drags its
+            // connectors along.
+            ForEach(store.canvas.connectors) { connector in
+                connectorView(for: connector)
+                    .allowsHitTesting(false)
+            }
+
             // Captured snapshots.
             ForEach(Array(store.canvas.snapshots.enumerated()), id: \.element.id) { idx, snap in
                 snapshotFrame(index: idx, snapshot: snap)
@@ -529,6 +561,7 @@ struct FieldView: View {
     @ViewBuilder
     private func snapshotFrame(index: Int, snapshot: Snapshot) -> some View {
         let isEditing = editingSnapshotId == snapshot.id
+        let isSelected = selection == .snapshot(snapshot.id)
         let title = "Snapshot \(index + 1)"
         ZStack(alignment: .topLeading) {
             HStack(spacing: 8) {
@@ -552,17 +585,22 @@ struct FieldView: View {
             .offset(y: -Self.titleHeight)
 
             snapshotBody(snapshot: snapshot, isEditing: isEditing)
-                .frame(width: Self.sketchSize.width, height: Self.sketchSize.height)
+                .frame(width: CGFloat(snapshot.width),
+                       height: CGFloat(snapshot.height))
                 .background(Color.white)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(
-                            isEditing ? Color.accentColor.opacity(0.55) : Color.black.opacity(0.06),
-                            lineWidth: isEditing ? 1.5 : 0.5))
+                        .strokeBorder(borderColor(isSelected: isSelected, isEditing: isEditing),
+                                      lineWidth: borderWidth(isSelected: isSelected, isEditing: isEditing)))
                 .shadow(color: .black.opacity(0.10),
                         radius: isEditing ? 14 : 10,
                         x: 0, y: 4)
+                .overlay(alignment: .topLeading) {
+                    if isSelected && !isEditing {
+                        resizeHandles(for: snapshot)
+                    }
+                }
         }
         // Hit area = the whole ZStack (title + body). Without
         // this, clicks on the title row — which sits ~22pt above
@@ -572,14 +610,194 @@ struct FieldView: View {
         // a pan and the tile appeared to fly off as the whole
         // field panned underneath it.
         .contentShape(Rectangle())
+        // Double-tap enters edit mode (Figma click semantics);
+        // single tap just selects so the toolbar / keyboard
+        // shortcuts can act on it. When the connector tool is
+        // armed, single tap on a snapshot picks it as an
+        // endpoint instead.
+        .onTapGesture(count: 2) {
+            if !isEditing && !isPlacingConnector {
+                editingSnapshotId = snapshot.id
+            }
+        }
         .onTapGesture {
-            // Tap enters edit mode. Tap-to-deselect is the Done
-            // button's job.
-            if !isEditing { editingSnapshotId = snapshot.id }
+            if isPlacingConnector {
+                handleConnectorPick(snapshotId: snapshot.id)
+            } else if !isEditing {
+                selection = .snapshot(snapshot.id)
+            }
         }
         // Move-by-drag only in view mode. In edit mode the drag
         // belongs to the drawing surface inside the tile.
         .gesture(isEditing ? nil : dragGesture(for: snapshot))
+    }
+
+    /// Border color for a snapshot frame, picking up selection
+    /// + edit-mode highlights.
+    private func borderColor(isSelected: Bool, isEditing: Bool) -> Color {
+        if isEditing { return Color.accentColor.opacity(0.55) }
+        if isSelected { return Color.accentColor }
+        return Color.black.opacity(0.06)
+    }
+
+    private func borderWidth(isSelected: Bool, isEditing: Bool) -> CGFloat {
+        if isEditing || isSelected { return 1.5 }
+        return 0.5
+    }
+
+    /// Four corner resize handles for the selected snapshot or
+    /// image. Each drag stays anchored at the opposite corner
+    /// and preserves aspect ratio.
+    @ViewBuilder
+    private func resizeHandles(for snapshot: Snapshot) -> some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(ResizeCorner.allCases, id: \.self) { corner in
+                ResizeHandle()
+                    .position(handlePosition(
+                        corner: corner,
+                        size: CGSize(width: snapshot.width, height: snapshot.height)))
+                    .gesture(resizeGesture(corner: corner, snapshot: snapshot))
+            }
+        }
+        .frame(width: CGFloat(snapshot.width),
+               height: CGFloat(snapshot.height),
+               alignment: .topLeading)
+        .allowsHitTesting(true)
+    }
+
+    private func handlePosition(corner: ResizeCorner, size: CGSize) -> CGPoint {
+        switch corner {
+        case .topLeading:     return CGPoint(x: 0, y: 0)
+        case .topTrailing:    return CGPoint(x: size.width, y: 0)
+        case .bottomLeading:  return CGPoint(x: 0, y: size.height)
+        case .bottomTrailing: return CGPoint(x: size.width, y: size.height)
+        }
+    }
+
+    private func resizeGesture(corner: ResizeCorner, snapshot: Snapshot) -> some Gesture {
+        DragGesture(coordinateSpace: .global)
+            .onChanged { value in
+                // Live update via the existing draggingSnapshot
+                // hook isn't quite right for resize (it offsets
+                // the whole tile). For an MVP, just compute the
+                // commit value on end. Visual feedback during
+                // drag would require a separate per-corner
+                // overlay state — defer until users complain.
+                _ = value
+            }
+            .onEnded { value in
+                let dx = value.translation.width / currentScale
+                let dy = value.translation.height / currentScale
+                let (newW, newH, newX, newY) = resizedRect(
+                    corner: corner,
+                    originalX: snapshot.x, originalY: snapshot.y,
+                    originalWidth: snapshot.width, originalHeight: snapshot.height,
+                    dx: dx, dy: dy)
+                do {
+                    if newX != snapshot.x || newY != snapshot.y {
+                        try store.moveSnapshot(id: snapshot.id, to: newX, y: newY)
+                    }
+                    try store.resizeSnapshot(id: snapshot.id, to: newW, height: newH)
+                } catch {
+                    assertionFailure("resize snapshot failed: \(error)")
+                }
+            }
+    }
+
+    @ViewBuilder
+    private func resizeHandles(for image: ImageNote) -> some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(ResizeCorner.allCases, id: \.self) { corner in
+                ResizeHandle()
+                    .position(handlePosition(
+                        corner: corner,
+                        size: CGSize(width: image.width, height: image.height)))
+                    .gesture(resizeGesture(corner: corner, image: image))
+            }
+        }
+        .frame(width: CGFloat(image.width),
+               height: CGFloat(image.height),
+               alignment: .topLeading)
+    }
+
+    private func resizeGesture(corner: ResizeCorner, image: ImageNote) -> some Gesture {
+        DragGesture(coordinateSpace: .global)
+            .onEnded { value in
+                let dx = value.translation.width / currentScale
+                let dy = value.translation.height / currentScale
+                let (newW, newH, newX, newY) = resizedRect(
+                    corner: corner,
+                    originalX: image.x, originalY: image.y,
+                    originalWidth: image.width, originalHeight: image.height,
+                    dx: dx, dy: dy)
+                do {
+                    if newX != image.x || newY != image.y {
+                        try store.moveImage(id: image.id, to: newX, y: newY)
+                    }
+                    try store.resizeImage(id: image.id, to: newW, height: newH)
+                } catch {
+                    assertionFailure("resize image failed: \(error)")
+                }
+            }
+    }
+
+    /// Aspect-preserving resize math: pick the larger of dx/dy
+    /// (relative to the dragged corner direction) and scale the
+    /// other to match the original aspect ratio. Opposite corner
+    /// stays anchored — when the user drags the top-leading
+    /// corner, the bottom-trailing point doesn't move, so we
+    /// adjust both position and size accordingly.
+    private func resizedRect(
+        corner: ResizeCorner,
+        originalX: Double, originalY: Double,
+        originalWidth: Double, originalHeight: Double,
+        dx: Double, dy: Double
+    ) -> (width: Double, height: Double, x: Double, y: Double) {
+
+        let minSize: Double = 80
+        let aspect = originalHeight > 0 ? originalWidth / originalHeight : 1
+
+        // Sign-flip dx/dy depending on which corner is being
+        // dragged so positive = "growing the frame".
+        let growW: Double
+        let growH: Double
+        switch corner {
+        case .topLeading:     growW = -dx; growH = -dy
+        case .topTrailing:    growW =  dx; growH = -dy
+        case .bottomLeading:  growW = -dx; growH =  dy
+        case .bottomTrailing: growW =  dx; growH =  dy
+        }
+
+        // Use the bigger relative growth and constrain the
+        // other to keep aspect.
+        let proposedW = originalWidth + growW
+        let proposedH = originalHeight + growH
+        var newW = proposedW
+        var newH = proposedH
+        if abs(proposedW - originalWidth) * originalHeight
+            > abs(proposedH - originalHeight) * originalWidth {
+            newH = newW / aspect
+        } else {
+            newW = newH * aspect
+        }
+        newW = max(minSize, newW)
+        newH = max(minSize / aspect, newH)
+
+        // Translate to maintain the opposite-corner anchor.
+        var newX = originalX
+        var newY = originalY
+        switch corner {
+        case .topLeading:
+            newX = originalX + (originalWidth - newW)
+            newY = originalY + (originalHeight - newH)
+        case .topTrailing:
+            newY = originalY + (originalHeight - newH)
+        case .bottomLeading:
+            newX = originalX + (originalWidth - newW)
+        case .bottomTrailing:
+            break
+        }
+        return (newW, newH, newX, newY)
     }
 
     // MARK: - Text + image notes
@@ -612,8 +830,10 @@ struct FieldView: View {
                     .frame(maxWidth: 320, alignment: .leading)
             } else {
                 // Transparent in resting state — just type
-                // floating on the field, Figma-style. Empty
-                // notes show a muted placeholder hint.
+                // floating on the field, Figma-style. A selected
+                // note gets a faint accent outline so the user
+                // sees what they're about to delete with Backspace.
+                let isSelected = selection == .text(note.id)
                 Text(note.text.isEmpty ? "Empty note" : note.text)
                     .font(.system(size: CGFloat(note.fontSize)))
                     .foregroundStyle(
@@ -622,10 +842,13 @@ struct FieldView: View {
                             : Color(rgba: note.color))
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(isSelected ? Color.accentColor : Color.clear,
+                                    lineWidth: 1.2))
                     .contentShape(Rectangle())
-                    .onTapGesture(count: 2) {
-                        beginTextEdit(note)
-                    }
+                    .onTapGesture(count: 2) { beginTextEdit(note) }
+                    .onTapGesture { selection = .text(note.id) }
                     .gesture(textDragGesture(for: note))
             }
         }
@@ -663,15 +886,21 @@ struct FieldView: View {
 
     @ViewBuilder
     private func imageNoteView(_ image: ImageNote) -> some View {
+        let isSelected = selection == .image(image.id)
         ImageNoteView(image: image)
             .frame(width: CGFloat(image.width), height: CGFloat(image.height))
             .clipShape(RoundedRectangle(cornerRadius: 4))
             .overlay(
                 RoundedRectangle(cornerRadius: 4)
-                    .stroke(Color.black.opacity(0.08), lineWidth: 0.5))
+                    .stroke(isSelected ? Color.accentColor : Color.black.opacity(0.08),
+                            lineWidth: isSelected ? 1.5 : 0.5))
             .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 2)
             .contentShape(Rectangle())
+            .onTapGesture { selection = .image(image.id) }
             .gesture(imageDragGesture(for: image))
+            .overlay(alignment: .topLeading) {
+                if isSelected { resizeHandles(for: image) }
+            }
     }
 
     private func imageDragGesture(for image: ImageNote) -> some Gesture {
@@ -781,6 +1010,70 @@ struct FieldView: View {
         case .text:
             placeTextInField(at: CGPoint(x: fieldX, y: fieldY))
         }
+    }
+
+    // MARK: - Connectors
+
+    /// Render a single connector as a thin line + small dots
+    /// at each endpoint. Endpoints are the centers of the two
+    /// snapshots — simpler than nearest-edge intersection and
+    /// good enough at the snapshot sizes we use.
+    @ViewBuilder
+    private func connectorView(for connector: Connector) -> some View {
+        if let p1 = snapshotCenter(id: connector.from),
+           let p2 = snapshotCenter(id: connector.to) {
+            ZStack {
+                Path { path in
+                    path.move(to: p1)
+                    path.addLine(to: p2)
+                }
+                .stroke(Color.accentColor.opacity(0.65),
+                        style: StrokeStyle(lineWidth: 2,
+                                           lineCap: .round,
+                                           lineJoin: .round))
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 8, height: 8)
+                    .position(p1)
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 8, height: 8)
+                    .position(p2)
+            }
+        }
+    }
+
+    /// Center of a snapshot's tile in field coords. Returns nil
+    /// if the snapshot doesn't exist (e.g. it was deleted from
+    /// under a stale connector).
+    private func snapshotCenter(id: UUID) -> CGPoint? {
+        guard let snap = store.canvas.snapshots.first(where: { $0.id == id }) else {
+            return nil
+        }
+        let drag = draggingOffset(for: id)
+        return CGPoint(
+            x: snap.x + snap.width / 2 + drag.width,
+            y: snap.y + snap.height / 2 + drag.height)
+    }
+
+    private func handleConnectorPick(snapshotId: UUID) {
+        guard let first = connectorFirstId else {
+            // First pick — remember and wait for the second.
+            connectorFirstId = snapshotId
+            return
+        }
+        guard first != snapshotId else {
+            // Same snapshot tapped twice — restart the pick.
+            connectorFirstId = nil
+            return
+        }
+        do {
+            _ = try store.addConnector(from: first, to: snapshotId)
+        } catch {
+            assertionFailure("addConnector failed: \(error)")
+        }
+        connectorFirstId = nil
+        isPlacingConnector = false
     }
 
     /// Center of the field view in its own local coords. Used
@@ -1131,6 +1424,28 @@ private struct PeerCursorEntry {
     let peerId: String
     let position: CGPoint
     let color: Color
+}
+
+// MARK: - Resize handle
+
+enum ResizeCorner: CaseIterable, Hashable {
+    case topLeading, topTrailing, bottomLeading, bottomTrailing
+}
+
+/// Small white square with a subtle border + drop shadow. Sits
+/// at each corner of a selected snapshot or image. The actual
+/// drag gesture is attached by `FieldView.resizeGesture`.
+struct ResizeHandle: View {
+    static let size: CGFloat = 12
+    var body: some View {
+        RoundedRectangle(cornerRadius: 2)
+            .fill(Color.white)
+            .frame(width: Self.size, height: Self.size)
+            .overlay(
+                RoundedRectangle(cornerRadius: 2)
+                    .stroke(Color.accentColor, lineWidth: 1.5))
+            .shadow(color: .black.opacity(0.15), radius: 2, x: 0, y: 1)
+    }
 }
 
 /// Bridge that turns the raw bytes stored in an `ImageNote.data`
