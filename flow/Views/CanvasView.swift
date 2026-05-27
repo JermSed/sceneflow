@@ -57,6 +57,15 @@ struct CanvasView: View {
     /// between drawing and erasing.
     let tool: DrawingTool
 
+    /// Pen color (0xRRGGBBAA, matching the doc's Stroke.color shape).
+    let color: UInt32
+
+    /// Pen width in sketch-local points. Also controls eraser
+    /// radius via `eraseRadius(for:)` — a tiny pen erases with
+    /// a tiny hit area, a chunky marker erases with a thumb-sized
+    /// one.
+    let width: Double
+
     /// In-flight stroke points, in sketch-local coordinates.
     /// Lives in `@State` so SwiftUI invalidates the body when it
     /// grows — but the doc isn't touched until release.
@@ -83,9 +92,6 @@ struct CanvasView: View {
     @State private var lastBroadcast: Date = .distantPast
     private let broadcastInterval: TimeInterval = 1.0 / 30
 
-    /// Hardcoded for Phase 1 — pickers come later.
-    private let defaultColor: UInt32 = 0x111111FF  // near-black
-    private let defaultWidth: Double = 2.5
 
     var body: some View {
         Canvas { ctx, _ in
@@ -109,8 +115,8 @@ struct CanvasView: View {
             if showLiveOverlay, !inProgressPoints.isEmpty {
                 ctx.stroke(
                     Self.path(for: inProgressPoints),
-                    with: .color(Color(rgba: defaultColor)),
-                    style: Self.strokeStyle(width: defaultWidth))
+                    with: .color(Color(rgba: color)),
+                    style: Self.strokeStyle(width: width))
             }
         }
         // The frame chrome (white paper background, border, shadow)
@@ -118,7 +124,18 @@ struct CanvasView: View {
         // here. Still need an explicit hit-test shape so the drag
         // gesture catches taps in empty regions of the sketch.
         .contentShape(Rectangle())
+        // On iOS we overlay a UIKit capture surface for real
+        // Pencil pressure + coalesced sub-touches. On macOS /
+        // visionOS we keep the SwiftUI DragGesture (no UITouch
+        // there, and trackpad/mouse don't carry pressure anyway).
+        #if canImport(UIKit)
+        .overlay(
+            PressureCaptureView(onSample: handlePressureSample)
+                .allowsHitTesting(true)
+        )
+        #else
         .gesture(dragGesture)
+        #endif
         // When the just-committed stroke lands in the doc-derived
         // canvas, drop the local buffer. We key this on stroke
         // count rather than identity equality so it's cheap.
@@ -153,12 +170,14 @@ struct CanvasView: View {
     // MARK: - Gesture
 
     /// `minimumDistance: 0` so a single tap leaves a visible dot
-    /// — otherwise dotting an i requires a tiny drag.
+    /// — otherwise dotting an i requires a tiny drag. Used on
+    /// non-iOS platforms (macOS, visionOS) where we don't have a
+    /// UIKit touch surface for real pressure.
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 switch tool {
-                case .pen:    handleDragChange(at: value.location)
+                case .pen:    handleDragChange(at: value.location, pressure: 0.5)
                 case .eraser: handleEraseChange(at: value.location)
                 }
             }
@@ -170,13 +189,43 @@ struct CanvasView: View {
             }
     }
 
-    /// Eraser hit radius in sketch-local points. Big enough to
-    /// feel forgiving without erasing strokes the user wasn't
-    /// aiming for. Tune by feel.
-    private static let eraseRadius: Double = 18
+    #if canImport(UIKit)
+    /// Dispatches a sample from the UIKit capture surface based
+    /// on the current tool. Pen samples flow into the same buffer
+    /// the SwiftUI gesture path uses; eraser samples take the
+    /// same path too.
+    private func handlePressureSample(_ sample: PressureCaptureView.Sample) {
+        switch tool {
+        case .pen:
+            switch sample.phase {
+            case .began, .changed:
+                handleDragChange(at: sample.location, pressure: sample.pressure)
+            case .ended:
+                commitInProgressStroke()
+            }
+        case .eraser:
+            switch sample.phase {
+            case .began, .changed:
+                handleEraseChange(at: sample.location)
+            case .ended:
+                break
+            }
+        }
+    }
+    #endif
+
+    /// Eraser hit radius in sketch-local points. Scales with the
+    /// chosen pen width so a tiny pen erases precisely and a
+    /// chunky marker erases with a generous thumb-sized area.
+    /// Clamp the floor so finger taps with a 1.5pt pen don't
+    /// need pixel-accuracy.
+    private func eraseRadius(for width: Double) -> Double {
+        max(12, width * 3.5)
+    }
 
     private func handleEraseChange(at location: CGPoint) {
         let p = CGPoint(x: location.x, y: location.y)
+        let radius = eraseRadius(for: width)
         // Find strokes whose sampled points are within the
         // erase radius of the current pointer. Whole-stroke
         // erasure (vs. splitting on the erased segment) is the
@@ -184,7 +233,7 @@ struct CanvasView: View {
         // do at small radii.
         let hits = store.canvas.activeSketch.strokes.filter { stroke in
             stroke.points.contains { pt in
-                hypot(pt.x - p.x, pt.y - p.y) < Self.eraseRadius
+                hypot(pt.x - p.x, pt.y - p.y) < radius
             }
         }
         for stroke in hits {
@@ -192,11 +241,11 @@ struct CanvasView: View {
         }
     }
 
-    private func handleDragChange(at location: CGPoint) {
+    private func handleDragChange(at location: CGPoint, pressure: Double = 0.5) {
         let point = Point(
             x: Double(location.x),
             y: Double(location.y),
-            pressure: 0.5)
+            pressure: pressure)
         inProgressPoints.append(point)
 
         // Mint the stroke id at the first sample of the drag so
@@ -217,8 +266,8 @@ struct CanvasView: View {
         presence.sendLiveStroke(
             id: id,
             points: inProgressPoints,
-            color: defaultColor,
-            width: defaultWidth,
+            color: color,
+            width: width,
             cursor: location,
             in: documentIdProxy)
     }
@@ -231,8 +280,8 @@ struct CanvasView: View {
         let id = currentStrokeId ?? UUID()
         let stroke = Stroke(
             id: id,
-            color: defaultColor,
-            width: defaultWidth,
+            color: color,
+            width: width,
             points: inProgressPoints)
         do {
             try store.commitStroke(stroke)

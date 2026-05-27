@@ -18,20 +18,42 @@ struct BoardOpenView: View {
     @State private var store: BoardStore?
     @State private var loadError: String?
     @State private var showShareSheet = false
+    @State private var showIdentitySheet = false
     @State private var tool: DrawingTool = .pen
+    @State private var color: UInt32 = DrawingPalette.colors.first ?? 0x111111FF
+    @State private var width: Double = DrawingPalette.widths[1]   // default = "normal"
 
     var body: some View {
         Group {
             if let store, let summary = library.boards.first(where: { $0.id == boardId }) {
-                FieldView(
-                    store: store,
-                    documentId: summary.documentId,
-                    presence: library.presence,
-                    tool: $tool)
-                    .toolbar { toolbar(for: store) }
-                    .sheet(isPresented: $showShareSheet) {
-                        ShareBoardSheet(summary: summary)
+                ZStack(alignment: .top) {
+                    FieldView(
+                        store: store,
+                        documentId: summary.documentId,
+                        presence: library.presence,
+                        tool: $tool,
+                        color: $color,
+                        width: $width)
+
+                    // Slim banner that drops down from the top of
+                    // the board when the sync socket isn't ready.
+                    // Local edits keep working (Automerge is
+                    // offline-first) — the banner just tells the
+                    // user that "what they draw will sync once the
+                    // relay is reachable again."
+                    if shouldShowOfflineBanner {
+                        OfflineBanner()
+                            .transition(.move(edge: .top).combined(with: .opacity))
                     }
+                }
+                .animation(.easeInOut(duration: 0.25), value: shouldShowOfflineBanner)
+                .toolbar { toolbar(for: store, summary: summary) }
+                .sheet(isPresented: $showShareSheet) {
+                    ShareBoardSheet(summary: summary)
+                }
+                .sheet(isPresented: $showIdentitySheet) {
+                    IdentitySheet(color: library.presence.localColor)
+                }
             } else if let loadError {
                 ContentUnavailableView(
                     "Couldn't open board",
@@ -55,10 +77,56 @@ struct BoardOpenView: View {
         library.boards.first(where: { $0.id == boardId })?.name ?? "Board"
     }
 
+    /// Show the offline banner only when we're genuinely unable
+    /// to talk to the relay (disconnected). `connecting` /
+    /// `reconnecting` are transient by design — flashing the
+    /// banner for those is more noise than signal.
+    private var shouldShowOfflineBanner: Bool {
+        library.syncStatus.state == .disconnected
+    }
+
     @ToolbarContentBuilder
-    private func toolbar(for store: BoardStore) -> some ToolbarContent {
+    private func toolbar(for store: BoardStore, summary: BoardSummary) -> some ToolbarContent {
         ToolbarItem(placement: .navigation) {
             SyncStatusIndicator(observer: library.syncStatus)
+        }
+
+        ToolbarItem(placement: .navigation) {
+            HStack(spacing: 6) {
+                Button {
+                    store.undo()
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(!store.canUndo)
+                .accessibilityLabel("Undo")
+
+                Button {
+                    store.redo()
+                } label: {
+                    Image(systemName: "arrow.uturn.forward")
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(!store.canRedo)
+                .accessibilityLabel("Redo")
+            }
+        }
+
+        ToolbarItem(placement: .primaryAction) {
+            PeerPill(
+                presence: library.presence,
+                documentId: summary.documentIdString)
+        }
+
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                showIdentitySheet = true
+            } label: {
+                Image(systemName: "person.crop.circle")
+                    .foregroundStyle(library.presence.localColor)
+            }
+            .accessibilityLabel("Your name")
         }
 
         ToolbarItem(placement: .primaryAction) {

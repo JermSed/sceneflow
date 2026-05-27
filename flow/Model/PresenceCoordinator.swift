@@ -51,6 +51,10 @@ struct PeerPresence: Hashable, Sendable {
     /// Color derived from peer ID — stable across launches because
     /// the source string is stable.
     var color: Color
+    /// Display name the peer broadcasts. Optional because not
+    /// every message carries it; falls back to a short hex form
+    /// of the peer id when nil (`PeerPresence.fallbackName(for:)`).
+    var displayName: String?
     /// Last reported cursor in field coordinates, or `nil` if the
     /// peer hasn't moved their cursor recently.
     var cursor: CGPoint?
@@ -64,6 +68,13 @@ struct PeerPresence: Hashable, Sendable {
     /// Last time we heard anything from this peer. Used by the
     /// cleanup timer to drop stale entries.
     var lastSeenAt: Date
+
+    /// Short, deterministic label for peers that haven't told us
+    /// their name yet. Six hex chars from the peer id is enough
+    /// to distinguish at the scale we care about.
+    static func fallbackName(for peerId: String) -> String {
+        "Guest \(peerId.prefix(6))"
+    }
 }
 
 struct PeerLiveStroke: Hashable, Sendable {
@@ -76,8 +87,13 @@ struct PeerLiveStroke: Hashable, Sendable {
 // MARK: - Wire format
 
 /// Envelope sent over the side-channel WebSocket. Always JSON.
+///
+/// Carries the sender's display name on every message so a peer
+/// that connects mid-session learns names immediately rather than
+/// having to wait for a hypothetical "hello" packet.
 struct PresenceEnvelope: Codable, Sendable {
     var senderId: String
+    var senderName: String?
     var documentId: String
     var msg: PresenceMessage
 }
@@ -117,6 +133,11 @@ final class PresenceCoordinator: ObservableObject {
     /// Color for the local peer (toolbar tint, future "you" label).
     let localColor: Color
 
+    /// Display name the local peer sends out with every message.
+    /// Settable so the settings sheet can update it live; sending
+    /// happens next time the user moves the pen.
+    @Published var localDisplayName: String = "You"
+
     /// URL of the presence relay.
     let relayURL: URL
 
@@ -144,9 +165,8 @@ final class PresenceCoordinator: ObservableObject {
 
     /// Broadcast a cursor update (peer is hovering / panning, not drawing).
     func sendCursor(_ point: CGPoint, in documentId: DocumentIdProxy) {
-        let envelope = PresenceEnvelope(
-            senderId: localPeerId,
-            documentId: documentId.stringValue,
+        let envelope = makeEnvelope(
+            for: documentId,
             msg: PresenceMessage(
                 kind: .cursor,
                 cursor: WirePoint(x: point.x, y: point.y)))
@@ -163,9 +183,8 @@ final class PresenceCoordinator: ObservableObject {
         cursor: CGPoint,
         in documentId: DocumentIdProxy
     ) {
-        let envelope = PresenceEnvelope(
-            senderId: localPeerId,
-            documentId: documentId.stringValue,
+        let envelope = makeEnvelope(
+            for: documentId,
             msg: PresenceMessage(
                 kind: .liveStroke,
                 cursor: WirePoint(x: cursor.x, y: cursor.y),
@@ -179,13 +198,25 @@ final class PresenceCoordinator: ObservableObject {
     /// Tell peers we lifted the pen. They drop their overlay; the
     /// doc-sync layer fills in the real stroke a moment later.
     func sendEndStroke(id: UUID, in documentId: DocumentIdProxy) {
-        let envelope = PresenceEnvelope(
-            senderId: localPeerId,
-            documentId: documentId.stringValue,
+        let envelope = makeEnvelope(
+            for: documentId,
             msg: PresenceMessage(
                 kind: .endStroke,
                 strokeId: id.uuidString))
         send(envelope)
+    }
+
+    /// Common envelope assembly — keeps the sender id + name
+    /// attached to every outgoing message in one place.
+    private func makeEnvelope(
+        for documentId: DocumentIdProxy,
+        msg: PresenceMessage
+    ) -> PresenceEnvelope {
+        PresenceEnvelope(
+            senderId: localPeerId,
+            senderName: localDisplayName,
+            documentId: documentId.stringValue,
+            msg: msg)
     }
 
     private func send(_ envelope: PresenceEnvelope) {
@@ -206,12 +237,16 @@ final class PresenceCoordinator: ObservableObject {
         let peerId = envelope.senderId
         var state = peers[peerId] ?? PeerPresence(
             color: Self.color(for: peerId),
+            displayName: nil,
             cursor: nil,
             liveStroke: nil,
             lastDocumentId: nil,
             lastSeenAt: .now)
         state.lastSeenAt = .now
         state.lastDocumentId = envelope.documentId
+        if let name = envelope.senderName, !name.isEmpty {
+            state.displayName = name
+        }
 
         switch envelope.msg.kind {
         case .cursor:

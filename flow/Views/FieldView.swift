@@ -47,6 +47,13 @@ struct FieldView: View {
     /// drawing surface share the same selection.
     @Binding var tool: DrawingTool
 
+    /// Active pen color (and the color used to render in-progress
+    /// previews of the user's own strokes).
+    @Binding var color: UInt32
+
+    /// Active stroke width.
+    @Binding var width: Double
+
     /// Logical size of the active sketch and of each snapshot tile.
     static let sketchSize = CGSize(width: 800, height: 600)
 
@@ -93,7 +100,7 @@ struct FieldView: View {
         // bottom edge — that's where the previous .overlay version
         // disappeared on iPad.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            ToolbarPill(tool: $tool)
+            ToolbarPill(tool: $tool, color: $color, width: $width)
                 .padding(.bottom, 12)
                 .padding(.top, 8)
                 .frame(maxWidth: .infinity)
@@ -190,7 +197,9 @@ struct FieldView: View {
                 store: store,
                 documentId: documentId,
                 presence: presence,
-                tool: tool)
+                tool: tool,
+                color: color,
+                width: width)
             // Peers' in-progress strokes are drawn inside the
             // active sketch frame because they're in sketch-local
             // coordinates. Each is colored with the peer's

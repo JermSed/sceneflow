@@ -5,55 +5,64 @@
 //  The SwiftUI-facing wrapper around `BoardDocument`. Views observe
 //  this; they never touch the Automerge document directly.
 //
-//  Why a separate type, not "just use BoardDocument"?
+//  Owns the local undo / redo stack for this board. The stack is
+//  intentionally LOCAL — every push happens here when the user
+//  initiates a mutation. Edits that arrive via doc sync from a
+//  peer don't go through these methods, so they don't pollute
+//  the local history. That matches what feels right in a
+//  collaborative tool: "undo" undoes what *I* did, not what we
+//  collectively did.
 //
-//   • `Automerge.Document` is already `ObservableObject`, but exposing
-//     it to views would leak CRDT concepts (ObjIds, ScalarValue,
-//     change-hash heads) into the UI layer. CLAUDE.md is explicit:
-//     "Keep the document model logic separate from SwiftUI views."
-//
-//   • Views want a plain `CanvasDoc` value to render. `BoardStore`
-//     republishes a fresh snapshot every time the underlying doc
-//     changes — locally OR via a future sync merge.
-//
-//  Performance note:
-//
-//   Re-decoding the entire `CanvasDoc` on every pen point is O(n) over
-//   the doc. At Phase 1 with one client and a handful of strokes that's
-//   fine — measured: the round-trip test populates a small doc and
-//   completes in <100ms. If the canvas grows large (thousands of
-//   points), the right fix is to subscribe to `doc.objectDidChange`,
-//   diff against `doc.heads()`, and apply patches to the published
-//   `CanvasDoc` rather than re-snapshotting. Hold that optimization
-//   until a profile shows it's needed; premature work here would
-//   couple the store to Automerge's patch shape.
+//  Performance note (carried over from earlier): re-decoding the
+//  entire `CanvasDoc` on every change is O(n) over the doc. For
+//  Phase-1 sizes that's fine. The right fix when it stops being
+//  fine is patch-based incremental updates — keep that out until
+//  a profile says so.
 //
 
 import Foundation
 import Combine
 import Automerge
 
-/// SwiftUI-observable wrapper around a `BoardDocument`. Owns the
-/// document, exposes the current state as `canvas`, and forwards
-/// mutation calls to the underlying CRDT.
+/// One undoable user-initiated mutation. Each variant carries
+/// enough state to inverse-apply: a removed stroke remembers its
+/// content so it can be re-added; a captured snapshot remembers
+/// the strokes that were cleared from the active sketch so undo
+/// can restore them.
 ///
-/// `@MainActor` so SwiftUI can read `canvas` without warnings and so
-/// the (not-individually-atomic) sequence of Automerge calls inside
-/// each mutation runs on a single thread.
+/// Concurrency note: these actions are applied locally without
+/// any CRDT-awareness. Peers see an undo as a normal forward
+/// operation (a delete, a re-add, a re-capture), and their own
+/// undo histories are independent of ours.
+enum UndoableAction: Sendable {
+    case strokeAdded(Stroke)
+    case strokeRemoved(Stroke)
+    case snapshotCaptured(snapshot: Snapshot, restoredStrokes: [Stroke])
+    case snapshotMoved(id: UUID, from: CGPoint, to: CGPoint)
+}
+
 @MainActor
 final class BoardStore: ObservableObject {
 
-    /// The current state of the board. Refreshed after every local
-    /// mutation and (in Phase 2) after every merged sync change.
     @Published private(set) var canvas: CanvasDoc
+
+    /// True when there's an action available to undo. Bound by
+    /// toolbar buttons to disable/enable themselves.
+    @Published private(set) var canUndo: Bool = false
+    @Published private(set) var canRedo: Bool = false
 
     private let board: BoardDocument
     private var changeSink: AnyCancellable?
 
+    private var undoStack: [UndoableAction] = []
+    private var redoStack: [UndoableAction] = []
+    /// Cap to keep memory bounded on long sessions. 100 is plenty
+    /// for individual stroke-grain undo; beyond that the user is
+    /// arguably looking for "clear board" rather than "undo".
+    private let maxStackDepth = 100
+
     // MARK: - Init
 
-    /// Open an empty board. Throws only if Automerge can't allocate
-    /// the seed structures, which in practice means OOM.
     init() throws {
         let board = try BoardDocument()
         self.board = board
@@ -61,7 +70,6 @@ final class BoardStore: ObservableObject {
         subscribeToDocChanges()
     }
 
-    /// Open a board from saved bytes.
     init(data: Data) throws {
         let board = try BoardDocument(data: data)
         self.board = board
@@ -69,10 +77,8 @@ final class BoardStore: ObservableObject {
         subscribeToDocChanges()
     }
 
-    /// Wrap an `Automerge.Document` that is owned by a Repo (so that
-    /// sync messages coming in over the network update the same doc
-    /// the UI observes). The board is adopted in-place and seeded if
-    /// the root tree isn't already there.
+    /// Wrap an `Automerge.Document` owned by a Repo (so sync
+    /// updates land in the same doc the UI is observing).
     init(adopting doc: Automerge.Document) throws {
         let board = try BoardDocument(adopting: doc)
         self.board = board
@@ -80,22 +86,13 @@ final class BoardStore: ObservableObject {
         subscribeToDocChanges()
     }
 
-    /// Subscribe to the Automerge doc's "did change" publisher so that
-    /// non-local edits (Phase 2 sync merges) also trigger a republish.
-    /// Local mutations also fire this, which is harmless — we just
-    /// re-snapshot once more.
     private func subscribeToDocChanges() {
         changeSink = board.doc.objectDidChange
             .receive(on: RunLoop.main)
-            .sink { [weak self] in
-                self?.refresh()
-            }
+            .sink { [weak self] in self?.refresh() }
     }
 
     private func refresh() {
-        // Decode failure here would mean the doc went into a state the
-        // model can't represent. Surface it loudly rather than silently
-        // showing stale UI — easier to debug.
         do {
             canvas = try board.snapshot()
         } catch {
@@ -105,51 +102,130 @@ final class BoardStore: ObservableObject {
 
     // MARK: - Persistence
 
-    /// Bytes for the full change history. Caller is responsible for
-    /// writing them somewhere durable. Phase 1 callers: a small disk
-    /// store under app support. Phase 2: also the sync transport.
-    func save() -> Data {
-        board.save()
-    }
+    func save() -> Data { board.save() }
 
-    // MARK: - Mutation passthroughs
+    // MARK: - Mutations (local; each pushes onto undo stack)
 
-    /// Start a new stroke. The returned handle is what the gesture
-    /// recognizer holds onto for the duration of one finger-down /
-    /// pencil-down → up cycle.
     func beginStroke(id: UUID = UUID(), color: UInt32, width: Double) throws -> StrokeHandle {
+        // Live point-by-point streaming uses begin/append. We
+        // don't push undo entries for those — only the finished
+        // stroke (via `commitStroke`) goes on the stack.
         try board.beginStroke(id: id, color: color, width: width)
     }
 
-    /// Append a pen sample to an in-progress stroke. Used by tests
-    /// and any future "live preview" affordance — `CanvasView`
-    /// itself batches points locally and ships finished strokes via
-    /// `commitStroke`.
     func appendPoint(to handle: StrokeHandle, _ point: Point) throws {
         try board.appendPoint(to: handle, point)
     }
 
-    /// Write a finished stroke in one Automerge change. The hot
-    /// path for drawing.
     func commitStroke(_ stroke: Stroke) throws {
         try board.commitStroke(stroke)
+        push(.strokeAdded(stroke))
     }
 
-    /// Erase a stroke from the active sketch by its id. Used by
-    /// the eraser tool.
     func removeActiveStroke(id: UUID) throws {
+        // Capture the stroke before deleting so undo can put it
+        // back exactly as it was.
+        let removed = canvas.activeSketch.strokes.first(where: { $0.id == id })
         try board.removeActiveStroke(id: id)
+        if let removed { push(.strokeRemoved(removed)) }
     }
 
-    /// Freeze the live sketch into a snapshot at `(x, y, z)` and
-    /// clear the sketch surface.
     @discardableResult
     func captureSnapshot(at x: Double, y: Double, z: Int, id: UUID = UUID()) throws -> UUID {
-        try board.captureSnapshot(at: x, y: y, z: z, id: id)
+        // Remember the strokes that will get cleared from the
+        // active sketch — without them, undoing a capture would
+        // leave the user staring at an empty board.
+        let restored = canvas.activeSketch.strokes
+        let snapId = try board.captureSnapshot(at: x, y: y, z: z, id: id)
+        let snap = Snapshot(id: snapId, x: x, y: y, z: z, strokes: restored)
+        push(.snapshotCaptured(snapshot: snap, restoredStrokes: restored))
+        return snapId
     }
 
-    /// Drag a placed snapshot to a new field coordinate.
     func moveSnapshot(id: UUID, to x: Double, y: Double) throws {
+        let from = canvas.snapshots.first(where: { $0.id == id })
+            .map { CGPoint(x: $0.x, y: $0.y) }
         try board.moveSnapshot(id: id, to: x, y: y)
+        if let from {
+            push(.snapshotMoved(id: id, from: from, to: CGPoint(x: x, y: y)))
+        }
+    }
+
+    // MARK: - Undo / redo
+
+    func undo() {
+        guard let action = undoStack.popLast() else { return }
+        applyInverse(of: action)
+        redoStack.append(action)
+        updateStackFlags()
+    }
+
+    func redo() {
+        guard let action = redoStack.popLast() else { return }
+        apply(action)
+        undoStack.append(action)
+        updateStackFlags()
+    }
+
+    /// Push a user-initiated action onto the undo stack. Any
+    /// pending redo history is discarded — once the user takes a
+    /// new action after undoing, the previously-undone branch is
+    /// gone (standard editor behavior).
+    private func push(_ action: UndoableAction) {
+        undoStack.append(action)
+        if undoStack.count > maxStackDepth {
+            undoStack.removeFirst(undoStack.count - maxStackDepth)
+        }
+        redoStack.removeAll()
+        updateStackFlags()
+    }
+
+    private func updateStackFlags() {
+        canUndo = !undoStack.isEmpty
+        canRedo = !redoStack.isEmpty
+    }
+
+    /// Re-apply the original mutation (used by `redo`).
+    private func apply(_ action: UndoableAction) {
+        do {
+            switch action {
+            case .strokeAdded(let stroke):
+                try board.commitStroke(stroke)
+            case .strokeRemoved(let stroke):
+                try board.removeActiveStroke(id: stroke.id)
+            case .snapshotCaptured(let snapshot, _):
+                // The restored strokes are already in the active
+                // sketch (we undid the capture by putting them
+                // back). Capturing again with the same id moves
+                // them into the snapshot, just like the first time.
+                _ = try board.captureSnapshot(
+                    at: snapshot.x, y: snapshot.y, z: snapshot.z, id: snapshot.id)
+            case .snapshotMoved(let id, _, let to):
+                try board.moveSnapshot(id: id, to: to.x, y: to.y)
+            }
+        } catch {
+            assertionFailure("redo failed: \(error)")
+        }
+    }
+
+    /// Apply the inverse of a user action (used by `undo`).
+    private func applyInverse(of action: UndoableAction) {
+        do {
+            switch action {
+            case .strokeAdded(let stroke):
+                try board.removeActiveStroke(id: stroke.id)
+            case .strokeRemoved(let stroke):
+                try board.commitStroke(stroke)
+            case .snapshotCaptured(let snapshot, let restored):
+                try board.removeSnapshot(id: snapshot.id)
+                for stroke in restored {
+                    try board.commitStroke(stroke)
+                }
+            case .snapshotMoved(let id, let from, _):
+                try board.moveSnapshot(id: id, to: from.x, y: from.y)
+            }
+        } catch {
+            assertionFailure("undo failed: \(error)")
+        }
     }
 }

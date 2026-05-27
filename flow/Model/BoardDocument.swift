@@ -273,6 +273,25 @@ final class BoardDocument {
         }
     }
 
+    /// Delete a snapshot from the spatial field by id. Used by
+    /// the undo path for `captureSnapshot`. Idempotent: missing
+    /// ids are a no-op.
+    func removeSnapshot(id: UUID) throws {
+        let list = try snapshotsListId()
+        let count = doc.length(obj: list)
+        let target = id.uuidString
+        for i in 0..<count {
+            guard case let .Object(snapMap, .Map) = try doc.get(obj: list, index: i)
+            else { continue }
+            guard case let .Scalar(.String(idString)) = try doc.get(obj: snapMap, key: "id")
+            else { continue }
+            if idString == target {
+                try doc.delete(obj: list, index: i)
+                return
+            }
+        }
+    }
+
     /// Reposition a snapshot in the spatial field. Last-write-wins on
     /// `x` and `y` — exactly what we want for drag-to-move.
     func moveSnapshot(id: UUID, to x: Double, y: Double) throws {

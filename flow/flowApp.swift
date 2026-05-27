@@ -31,6 +31,11 @@ struct flowApp: App {
     /// joined board id and the user lands directly in the canvas.
     @State private var navigationPath: [UUID] = []
 
+    /// User's display name. Persisted in UserDefaults; flows into
+    /// the presence coordinator so every outgoing message carries
+    /// it. First launch seeds a friendly default.
+    @AppStorage(IdentityDefaults.displayNameKey) private var displayName: String = ""
+
     var body: some Scene {
         WindowGroup {
             BoardListView(path: $navigationPath)
@@ -43,7 +48,21 @@ struct flowApp: App {
                         joinBanner(for: job)
                     }
                 }
+                .onAppear { seedDisplayName() }
+                .onChange(of: displayName) { _, new in
+                    library.presence.localDisplayName = new
+                }
         }
+    }
+
+    /// Make sure there's a name in storage, and push the current
+    /// value into the presence coordinator so it goes out with
+    /// the first message.
+    private func seedDisplayName() {
+        if displayName.isEmpty {
+            displayName = IdentityNames.random()
+        }
+        library.presence.localDisplayName = displayName
     }
 
     // MARK: - URL handling
