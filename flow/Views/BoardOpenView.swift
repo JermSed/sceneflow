@@ -68,6 +68,13 @@ struct BoardOpenView: View {
     /// other placement tools.
     @State private var isPlacingConnector: Bool = false
 
+    /// Pulse: when this changes, FieldView dismisses any
+    /// active in-place editing (snapshot edit mode, text edit
+    /// mode, open comment popover). Using a Date as a "trigger
+    /// flag" rather than a Bool because we only ever want
+    /// observers to fire on each press, not be sticky.
+    @State private var dismissEditingPulse: Date = .distantPast
+
     var body: some View {
         Group {
             if let store, let summary = library.boards.first(where: { $0.id == boardId }) {
@@ -86,7 +93,8 @@ struct BoardOpenView: View {
                         isPlacingText: $isPlacingText,
                         isPlacingComment: $isPlacingComment,
                         selection: $selection,
-                        isPlacingConnector: $isPlacingConnector)
+                        isPlacingConnector: $isPlacingConnector,
+                        dismissEditingPulse: $dismissEditingPulse)
 
                     // Slim banner that drops down from the top of
                     // the board when the sync socket isn't ready.
@@ -234,6 +242,10 @@ struct BoardOpenView: View {
                     isPlacingComment = false
                     isPlacingConnector = false
                     selection = nil
+                    // Pulse FieldView to dismiss any in-place
+                    // edit modes too (snapshot edit / text edit
+                    // / open comment popover).
+                    dismissEditingPulse = .now
                 }
                 .keyboardShortcut(.escape, modifiers: [])
             }

@@ -115,6 +115,14 @@ struct FieldView: View {
     /// tools.
     @Binding var isPlacingConnector: Bool
 
+    /// "Pulse" binding from the parent — when its value
+    /// changes, we exit any active in-place editing (snapshot
+    /// edit mode, text edit mode, open comment popover).
+    /// Driven by the parent's ESC keyboard shortcut. Using a
+    /// Date instead of a Bool because the binding semantically
+    /// represents an event, not state.
+    @Binding var dismissEditingPulse: Date
+
     /// Logical size of the active sketch and of each snapshot tile.
     static let sketchSize = CGSize(width: 800, height: 600)
 
@@ -183,7 +191,14 @@ struct FieldView: View {
                 //    here also clears any current selection.
                 Color(red: 0.91, green: 0.91, blue: 0.93)
                     .contentShape(Rectangle())
-                    .onTapGesture { selection = nil }
+                    .onTapGesture {
+                        // Tapping the empty field deselects AND
+                        // exits any active in-place editing —
+                        // matches what a user would expect after
+                        // "I'm done, click away."
+                        selection = nil
+                        dismissAllEditing()
+                    }
                     .onContinuousHover(coordinateSpace: .local) { phase in
                         if case .active(let loc) = phase {
                             lastHoverLocation = loc
@@ -326,6 +341,24 @@ struct FieldView: View {
             addImageAtViewportCenter(data)
             addImageRequest = nil
         }
+        // Parent's ESC fires this — drop any in-place editing.
+        .onChange(of: dismissEditingPulse) { _, _ in
+            dismissAllEditing()
+        }
+    }
+
+    /// Exit every in-place editing affordance — used by the
+    /// ESC key and by tap-on-empty-field. Doesn't touch
+    /// selection; the caller decides whether to also clear it.
+    private func dismissAllEditing() {
+        editingSnapshotId = nil
+        if editingTextId != nil {
+            // Commit pending edits before dismissing so the
+            // user doesn't lose what they typed.
+            commitTextEdit()
+        }
+        openedCommentId = nil
+        connectorFirstId = nil
     }
 
     /// Capture the sketch in place — the new snapshot lands at
