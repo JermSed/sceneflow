@@ -161,6 +161,12 @@ final class BoardStore: ObservableObject {
         case .snapshot(let snapshotId):
             try board.commitStrokeToSnapshot(snapshotId: snapshotId, stroke: stroke)
         }
+        // Refresh immediately so the local user sees the stroke
+        // land on the next frame instead of waiting for the
+        // throttled subscription. The throttle is there to bound
+        // batch-mutation cost; single user actions can afford a
+        // synchronous decode.
+        refresh()
         push(.strokeAdded(stroke, target: target))
     }
 
@@ -174,6 +180,7 @@ final class BoardStore: ObservableObject {
         case .snapshot(let snapshotId):
             try board.removeStrokeFromSnapshot(snapshotId: snapshotId, strokeId: id)
         }
+        refresh()
         if let removed { push(.strokeRemoved(removed, target: target)) }
     }
 
@@ -220,6 +227,13 @@ final class BoardStore: ObservableObject {
         let from = canvas.snapshots.first(where: { $0.id == id })
             .map { CGPoint(x: $0.x, y: $0.y) }
         try board.moveSnapshot(id: id, to: x, y: y)
+        // Synchronous refresh — without it the throttled
+        // subscription holds the canvas update for up to 16ms
+        // after the drag ends, and the snapshot briefly renders
+        // at its OLD position (the draggingOffset already
+        // cleared in the caller). That single-frame snap-back
+        // reads as "I lost the snapshot."
+        refresh()
         if let from {
             push(.snapshotMoved(id: id, from: from, to: CGPoint(x: x, y: y)))
         }
@@ -230,6 +244,7 @@ final class BoardStore: ObservableObject {
     func undo() {
         guard let action = undoStack.popLast() else { return }
         applyInverse(of: action)
+        refresh()   // immediate feedback, same reasoning as user mutations
         redoStack.append(action)
         updateStackFlags()
     }
@@ -237,6 +252,7 @@ final class BoardStore: ObservableObject {
     func redo() {
         guard let action = redoStack.popLast() else { return }
         apply(action)
+        refresh()
         undoStack.append(action)
         updateStackFlags()
     }
