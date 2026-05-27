@@ -62,21 +62,74 @@ struct BoardOpenView: View {
                     IdentitySheet(color: library.presence.localColor)
                 }
             } else if let loadError {
-                ContentUnavailableView(
-                    "Couldn't open board",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(loadError))
+                loadErrorView(loadError)
             } else {
                 ProgressView()
             }
         }
         .navigationTitle(boardName)
-        .task {
-            do {
-                store = try await library.openBoard(id: boardId)
-            } catch {
-                loadError = "\(error)"
+        .task { await loadStore() }
+    }
+
+    private func loadStore() async {
+        loadError = nil
+        do {
+            store = try await library.openBoard(id: boardId)
+        } catch {
+            loadError = "\(error)"
+        }
+    }
+
+    /// Error state for when `openBoard` throws. The most common
+    /// cause we've seen in the wild is a corrupted local file
+    /// (e.g. an interrupted write during sync). Offer two ways
+    /// out: retry (handles transient failures) and delete-and-
+    /// recover (handles persistent corruption — for shared
+    /// boards the user can re-join via the share URL after).
+    @ViewBuilder
+    private func loadErrorView(_ message: String) -> some View {
+        ContentUnavailableView {
+            Label("Couldn't open board", systemImage: "exclamationmark.triangle")
+        } description: {
+            VStack(spacing: 4) {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("The local copy may be corrupted. Try again, or delete this board and re-join it from the share link if it's collaborative.")
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 8)
             }
+        } actions: {
+            HStack(spacing: 12) {
+                Button {
+                    Task { await loadStore() }
+                } label: {
+                    Label("Try again", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+
+                Button(role: .destructive) {
+                    deleteThisBoard()
+                } label: {
+                    Label("Delete board", systemImage: "trash")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    private func deleteThisBoard() {
+        do {
+            try library.deleteBoard(id: boardId)
+            // Pop back to the list. The NavigationStack path lives
+            // on flowApp; clearing the destination by setting our
+            // own boardName change is awkward, so we lean on the
+            // OS's standard back-on-disappear behavior here — the
+            // user is already mid-error so the auto-pop is what
+            // they expect.
+        } catch {
+            assertionFailure("deleteBoard failed: \(error)")
         }
     }
 
