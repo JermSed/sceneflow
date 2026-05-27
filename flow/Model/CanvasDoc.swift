@@ -65,10 +65,59 @@ struct Snapshot: Codable, Hashable, Identifiable, Sendable {
     var strokes: [Stroke]
 }
 
+/// A typed text note placed anywhere on the spatial field.
+/// Like a Figma text element — z lets users order them, color
+/// matches the same `0xRRGGBBAA` pack as strokes.
+///
+/// Concurrent edits to `text` resolve last-write-wins under
+/// Automerge. That's fine for short labels but if two peers
+/// type in the same note simultaneously one set of characters
+/// will lose. We can promote `text` to an Automerge Text type
+/// later if that becomes a real problem.
+struct TextNote: Codable, Hashable, Identifiable, Sendable {
+    let id: UUID
+    var x: Double
+    var y: Double
+    var z: Int
+    var text: String
+    var fontSize: Double
+    var color: UInt32
+}
+
+/// A pasted / dropped image placed anywhere on the spatial
+/// field. Bytes live in the Automerge doc so they sync to peers
+/// just like strokes — convenient, but pricey for big images.
+/// We compress on insert (`ImageNote.compressedData(from:)`) to
+/// keep the doc bounded.
+///
+/// `format` is a hint for decoding; we always store either
+/// "png" or "jpeg" and resolve to platform image types at render.
+struct ImageNote: Codable, Hashable, Identifiable, Sendable {
+    let id: UUID
+    var x: Double
+    var y: Double
+    var z: Int
+    var width: Double
+    var height: Double
+    var data: Data
+    var format: String   // "png" | "jpeg"
+}
+
 /// The root of a board's Automerge document.
+///
+/// New top-level lists (`texts`, `images`) default to empty so
+/// boards saved before they existed still decode. The on-disk
+/// adopt path also seeds the underlying Automerge lists when
+/// they're absent — see `BoardDocument.init(adopting:)`.
 struct CanvasDoc: Codable, Hashable, Sendable {
     var snapshots: [Snapshot]
     var activeSketch: Sketch
+    var texts: [TextNote] = []
+    var images: [ImageNote] = []
 
-    static let empty = CanvasDoc(snapshots: [], activeSketch: .empty)
+    static let empty = CanvasDoc(
+        snapshots: [],
+        activeSketch: .empty,
+        texts: [],
+        images: [])
 }

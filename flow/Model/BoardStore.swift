@@ -39,6 +39,15 @@ enum UndoableAction: Sendable {
     case strokeRemoved(Stroke, target: EditTarget)
     case snapshotCaptured(snapshot: Snapshot, restoredStrokes: [Stroke])
     case snapshotMoved(id: UUID, from: CGPoint, to: CGPoint)
+    case textAdded(TextNote)
+    case textRemoved(TextNote)
+    case textMoved(id: UUID, from: CGPoint, to: CGPoint)
+    /// Old + new versions captured at the moment the user
+    /// committed an edit — used by undo/redo to swap them back.
+    case textEdited(id: UUID, oldText: String, newText: String)
+    case imageAdded(ImageNote)
+    case imageRemoved(ImageNote)
+    case imageMoved(id: UUID, from: CGPoint, to: CGPoint)
 }
 
 @MainActor
@@ -223,6 +232,75 @@ final class BoardStore: ObservableObject {
         return snapId
     }
 
+    // MARK: - Text notes
+
+    @discardableResult
+    func addText(at x: Double, y: Double, text: String = "") throws -> TextNote {
+        let note = TextNote(
+            id: UUID(),
+            x: x, y: y,
+            z: canvas.texts.count,
+            text: text,
+            fontSize: 16,
+            color: 0x111111FF)
+        try board.addText(note)
+        refresh()
+        push(.textAdded(note))
+        return note
+    }
+
+    func updateText(id: UUID, to newText: String) throws {
+        guard let old = canvas.texts.first(where: { $0.id == id }) else { return }
+        guard old.text != newText else { return }
+        try board.updateText(id: id, text: newText)
+        refresh()
+        push(.textEdited(id: id, oldText: old.text, newText: newText))
+    }
+
+    func moveText(id: UUID, to x: Double, y: Double) throws {
+        let from = canvas.texts.first(where: { $0.id == id })
+            .map { CGPoint(x: $0.x, y: $0.y) }
+        try board.moveText(id: id, to: x, y: y)
+        refresh()
+        if let from {
+            push(.textMoved(id: id, from: from, to: CGPoint(x: x, y: y)))
+        }
+    }
+
+    func removeText(id: UUID) throws {
+        let removed = canvas.texts.first(where: { $0.id == id })
+        try board.removeText(id: id)
+        refresh()
+        if let removed { push(.textRemoved(removed)) }
+    }
+
+    // MARK: - Image notes
+
+    @discardableResult
+    func addImage(_ note: ImageNote) throws -> ImageNote {
+        try board.addImage(note)
+        refresh()
+        push(.imageAdded(note))
+        return note
+    }
+
+    func moveImage(id: UUID, to x: Double, y: Double) throws {
+        let from = canvas.images.first(where: { $0.id == id })
+            .map { CGPoint(x: $0.x, y: $0.y) }
+        try board.moveImage(id: id, to: x, y: y)
+        refresh()
+        if let from {
+            push(.imageMoved(id: id, from: from, to: CGPoint(x: x, y: y)))
+        }
+    }
+
+    func removeImage(id: UUID) throws {
+        let removed = canvas.images.first(where: { $0.id == id })
+        try board.removeImage(id: id)
+        refresh()
+        if let removed { push(.imageRemoved(removed)) }
+    }
+
     func moveSnapshot(id: UUID, to x: Double, y: Double) throws {
         let from = canvas.snapshots.first(where: { $0.id == id })
             .map { CGPoint(x: $0.x, y: $0.y) }
@@ -292,6 +370,20 @@ final class BoardStore: ObservableObject {
                     at: snapshot.x, y: snapshot.y, z: snapshot.z, id: snapshot.id)
             case .snapshotMoved(let id, _, let to):
                 try board.moveSnapshot(id: id, to: to.x, y: to.y)
+            case .textAdded(let note):
+                try board.addText(note)
+            case .textRemoved(let note):
+                try board.removeText(id: note.id)
+            case .textMoved(let id, _, let to):
+                try board.moveText(id: id, to: to.x, y: to.y)
+            case .textEdited(let id, _, let newText):
+                try board.updateText(id: id, text: newText)
+            case .imageAdded(let note):
+                try board.addImage(note)
+            case .imageRemoved(let note):
+                try board.removeImage(id: note.id)
+            case .imageMoved(let id, _, let to):
+                try board.moveImage(id: id, to: to.x, y: to.y)
             }
         } catch {
             assertionFailure("redo failed: \(error)")
@@ -313,6 +405,20 @@ final class BoardStore: ObservableObject {
                 }
             case .snapshotMoved(let id, let from, _):
                 try board.moveSnapshot(id: id, to: from.x, y: from.y)
+            case .textAdded(let note):
+                try board.removeText(id: note.id)
+            case .textRemoved(let note):
+                try board.addText(note)
+            case .textMoved(let id, let from, _):
+                try board.moveText(id: id, to: from.x, y: from.y)
+            case .textEdited(let id, let oldText, _):
+                try board.updateText(id: id, text: oldText)
+            case .imageAdded(let note):
+                try board.removeImage(id: note.id)
+            case .imageRemoved(let note):
+                try board.addImage(note)
+            case .imageMoved(let id, let from, _):
+                try board.moveImage(id: id, to: from.x, y: from.y)
             }
         } catch {
             assertionFailure("undo failed: \(error)")

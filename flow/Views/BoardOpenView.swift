@@ -9,6 +9,11 @@
 //
 
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 struct BoardOpenView: View {
 
@@ -34,6 +39,17 @@ struct BoardOpenView: View {
     /// capture at its current viewport center, then resets it.
     @State private var captureRequest: Bool = false
 
+    /// Trigger flag for "add text note" — same hand-off pattern
+    /// as captureRequest. Set by the toolbar button (or the
+    /// Cmd+V paste handler when the clipboard has a string);
+    /// FieldView creates a TextNote at the current viewport
+    /// center and resets the flag.
+    @State private var addTextRequest: String? = nil
+
+    /// Trigger flag for "add image note" with the image bytes
+    /// to embed. Same hand-off pattern.
+    @State private var addImageRequest: Data? = nil
+
     var body: some View {
         Group {
             if let store, let summary = library.boards.first(where: { $0.id == boardId }) {
@@ -46,7 +62,9 @@ struct BoardOpenView: View {
                         color: $color,
                         width: $width,
                         sketchOpenedLocally: $sketchOpenedLocally,
-                        captureRequest: $captureRequest)
+                        captureRequest: $captureRequest,
+                        addTextRequest: $addTextRequest,
+                        addImageRequest: $addImageRequest)
 
                     // Slim banner that drops down from the top of
                     // the board when the sync socket isn't ready.
@@ -230,6 +248,25 @@ struct BoardOpenView: View {
 
         ToolbarItem(placement: .primaryAction) {
             Button {
+                addTextRequest = ""
+            } label: {
+                Label("Add text", systemImage: "text.cursor")
+            }
+            .accessibilityLabel("Add text note")
+        }
+
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                pasteFromClipboard()
+            } label: {
+                Label("Paste", systemImage: "doc.on.clipboard")
+            }
+            .keyboardShortcut("v", modifiers: .command)
+            .accessibilityLabel("Paste")
+        }
+
+        ToolbarItem(placement: .primaryAction) {
+            Button {
                 showShareSheet = true
             } label: {
                 Label("Share", systemImage: "square.and.arrow.up")
@@ -245,4 +282,46 @@ struct BoardOpenView: View {
     // pan/scale to drop the new snapshot at the viewport center.
     // The toolbar button just toggles `captureRequest` and
     // FieldView's `.onChange` does the work.
+
+    /// Read the system clipboard and dispatch into FieldView.
+    /// Image wins over text — pasting a Finder-copied PNG with
+    /// some incidental text representation should still drop the
+    /// image. Falls through silently when the clipboard has
+    /// nothing we can use.
+    private func pasteFromClipboard() {
+        #if canImport(UIKit)
+        let pb = UIPasteboard.general
+        if pb.hasImages, let img = pb.image,
+           let png = img.pngData() ?? img.jpegData(compressionQuality: 0.9) {
+            addImageRequest = png
+            return
+        }
+        if pb.hasStrings, let s = pb.string, !s.isEmpty {
+            addTextRequest = s
+            return
+        }
+        #elseif canImport(AppKit)
+        let pb = NSPasteboard.general
+        // Image types AppKit knows how to surface.
+        let imageTypes: [NSPasteboard.PasteboardType] = [.tiff, .png]
+        for type in imageTypes {
+            if let data = pb.data(forType: type) {
+                addImageRequest = data
+                return
+            }
+        }
+        // Generic file URL → load the bytes and let the
+        // compressor figure out the format.
+        if let urlString = pb.string(forType: .fileURL),
+           let url = URL(string: urlString),
+           let data = try? Data(contentsOf: url) {
+            addImageRequest = data
+            return
+        }
+        if let s = pb.string(forType: .string), !s.isEmpty {
+            addTextRequest = s
+            return
+        }
+        #endif
+    }
 }

@@ -26,6 +26,11 @@
 
 import SwiftUI
 import AutomergeRepo
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 struct FieldView: View {
 
@@ -74,6 +79,15 @@ struct FieldView: View {
     /// the chrome lives — while keeping the placement math here
     /// where the pan/scale state already is.
     @Binding var captureRequest: Bool
+
+    /// Same hand-off pattern for "add a text note": the parent
+    /// writes the initial string (or empty for new note); we
+    /// place it at viewport center and reset to nil.
+    @Binding var addTextRequest: String?
+
+    /// Same for "paste an image": parent writes the raw bytes,
+    /// we decode/compress and place at viewport center.
+    @Binding var addImageRequest: Data?
 
     /// Logical size of the active sketch and of each snapshot tile.
     static let sketchSize = CGSize(width: 800, height: 600)
@@ -201,6 +215,18 @@ struct FieldView: View {
                 captureRequest = false
             }
         }
+        // Same pattern for add-text / paste-image — the parent
+        // sets the binding, we react here.
+        .onChange(of: addTextRequest) { _, requested in
+            guard let initial = requested else { return }
+            addTextAtViewportCenter(initial: initial)
+            addTextRequest = nil
+        }
+        .onChange(of: addImageRequest) { _, requested in
+            guard let data = requested else { return }
+            addImageAtViewportCenter(data)
+            addImageRequest = nil
+        }
     }
 
     /// Capture the sketch in place — the new snapshot lands at
@@ -303,6 +329,24 @@ struct FieldView: View {
                     .offset(
                         x: snap.x + draggingOffset(for: snap.id).width,
                         y: snap.y + draggingOffset(for: snap.id).height)
+            }
+
+            // Image notes. Rendered before text so text can sit
+            // above images by z-order if a user really wants that.
+            ForEach(store.canvas.images) { image in
+                imageNoteView(image)
+                    .offset(
+                        x: image.x + draggingOffset(for: image.id).width,
+                        y: image.y + draggingOffset(for: image.id).height)
+            }
+
+            // Text notes — top of the z-stack so they're never
+            // hidden under an image accidentally.
+            ForEach(store.canvas.texts) { note in
+                textNoteView(note)
+                    .offset(
+                        x: note.x + draggingOffset(for: note.id).width,
+                        y: note.y + draggingOffset(for: note.id).height)
             }
 
             // Peer cursors. Drawn inside the transformed layer so
@@ -448,6 +492,151 @@ struct FieldView: View {
         // Move-by-drag only in view mode. In edit mode the drag
         // belongs to the drawing surface inside the tile.
         .gesture(isEditing ? nil : dragGesture(for: snapshot))
+    }
+
+    // MARK: - Text + image notes
+
+    @State private var editingTextId: UUID?
+    @State private var textEditDraft: String = ""
+
+    @ViewBuilder
+    private func textNoteView(_ note: TextNote) -> some View {
+        let isEditing = editingTextId == note.id
+        Group {
+            if isEditing {
+                TextField("", text: $textEditDraft, axis: .vertical)
+                    .font(.system(size: CGFloat(note.fontSize)))
+                    .foregroundStyle(Color(rgba: note.color))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.white.opacity(0.95))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(Color.accentColor, lineWidth: 1)))
+                    .textFieldStyle(.plain)
+                    .onSubmit { commitTextEdit() }
+                    .frame(maxWidth: 320, alignment: .leading)
+            } else {
+                Text(note.text.isEmpty ? "Empty note" : note.text)
+                    .font(.system(size: CGFloat(note.fontSize)))
+                    .foregroundStyle(
+                        note.text.isEmpty
+                            ? Color.secondary.opacity(0.6)
+                            : Color(rgba: note.color))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.white.opacity(0.7)))
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) {
+                        beginTextEdit(note)
+                    }
+                    .gesture(textDragGesture(for: note))
+            }
+        }
+    }
+
+    private func beginTextEdit(_ note: TextNote) {
+        textEditDraft = note.text
+        editingTextId = note.id
+    }
+
+    private func commitTextEdit() {
+        guard let id = editingTextId else { return }
+        let trimmed = textEditDraft
+        editingTextId = nil
+        do { try store.updateText(id: id, to: trimmed) }
+        catch { assertionFailure("updateText failed: \(error)") }
+    }
+
+    private func textDragGesture(for note: TextNote) -> some Gesture {
+        DragGesture(coordinateSpace: .global)
+            .onChanged { value in
+                draggingSnapshot = (note.id, value.translation)
+            }
+            .onEnded { value in
+                let dx = value.translation.width / currentScale
+                let dy = value.translation.height / currentScale
+                do {
+                    try store.moveText(id: note.id, to: note.x + dx, y: note.y + dy)
+                } catch {
+                    assertionFailure("moveText failed: \(error)")
+                }
+                draggingSnapshot = nil
+            }
+    }
+
+    @ViewBuilder
+    private func imageNoteView(_ image: ImageNote) -> some View {
+        ImageNoteView(image: image)
+            .frame(width: CGFloat(image.width), height: CGFloat(image.height))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color.black.opacity(0.08), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 2)
+            .contentShape(Rectangle())
+            .gesture(imageDragGesture(for: image))
+    }
+
+    private func imageDragGesture(for image: ImageNote) -> some Gesture {
+        DragGesture(coordinateSpace: .global)
+            .onChanged { value in
+                draggingSnapshot = (image.id, value.translation)
+            }
+            .onEnded { value in
+                let dx = value.translation.width / currentScale
+                let dy = value.translation.height / currentScale
+                do {
+                    try store.moveImage(id: image.id, to: image.x + dx, y: image.y + dy)
+                } catch {
+                    assertionFailure("moveImage failed: \(error)")
+                }
+                draggingSnapshot = nil
+            }
+    }
+
+    /// Add a text note at the user's current viewport center.
+    /// Called by the "+text" toolbar button and the Cmd+V paste
+    /// handler when the clipboard contains a string.
+    func addTextAtViewportCenter(initial: String = "") {
+        let topLeft = topLeftCenteredOnViewport()
+        do {
+            let note = try store.addText(
+                at: Double(topLeft.x + Self.sketchSize.width / 2),
+                y: Double(topLeft.y + Self.sketchSize.height / 2),
+                text: initial)
+            if initial.isEmpty {
+                // Drop the user straight into edit mode so they
+                // can type without an extra tap.
+                beginTextEdit(note)
+            }
+        } catch {
+            assertionFailure("addText failed: \(error)")
+        }
+    }
+
+    /// Add an image note at the user's current viewport center.
+    func addImageAtViewportCenter(_ data: Data) {
+        let topLeft = topLeftCenteredOnViewport()
+        let fieldCenter = CGPoint(
+            x: topLeft.x + Self.sketchSize.width / 2,
+            y: topLeft.y + Self.sketchSize.height / 2)
+        // Place image centered on the viewport's field-center.
+        guard var note = ImageNote.make(
+            from: data,
+            at: fieldCenter.x, y: fieldCenter.y,
+            z: store.canvas.images.count)
+        else { return }
+        // Shift so the image is centered, not top-lefted, on
+        // the viewport.
+        note.x -= note.width / 2
+        note.y -= note.height / 2
+        do { _ = try store.addImage(note) }
+        catch { assertionFailure("addImage failed: \(error)") }
     }
 
     @ViewBuilder
@@ -646,6 +835,44 @@ private struct PeerCursorEntry {
     let peerId: String
     let position: CGPoint
     let color: Color
+}
+
+/// Bridge that turns the raw bytes stored in an `ImageNote.data`
+/// blob into a SwiftUI `Image`. Cross-platform: iOS via `UIImage`,
+/// macOS via `NSImage`. Rendering is non-interactive — the
+/// parent FieldView attaches gestures.
+private struct ImageNoteView: View {
+    let image: ImageNote
+
+    var body: some View {
+        if let img = Self.image(from: image.data) {
+            img
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            Rectangle()
+                .fill(Color.secondary.opacity(0.2))
+                .overlay(
+                    Text("Image")
+                        .font(.caption)
+                        .foregroundStyle(.secondary))
+        }
+    }
+
+    /// Decode bytes to a SwiftUI Image, picking the right
+    /// platform-image type so we don't carry a CoreGraphics
+    /// dependency in callers.
+    private static func image(from data: Data) -> Image? {
+        #if canImport(UIKit)
+        guard let ui = UIImage(data: data) else { return nil }
+        return Image(uiImage: ui)
+        #elseif canImport(AppKit)
+        guard let ns = NSImage(data: data) else { return nil }
+        return Image(nsImage: ns)
+        #else
+        return nil
+        #endif
+    }
 }
 
 /// The little colored dot we render at a peer's reported cursor

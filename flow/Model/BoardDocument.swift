@@ -114,6 +114,15 @@ final class BoardDocument {
         if try doc.get(obj: .ROOT, key: "activeSketch") == nil {
             try Self.seedRoot(in: doc)
         } else {
+            // Forward-compat: boards saved before texts/images
+            // existed lack those top-level keys. Seed them so
+            // mutations don't have to guard for missing lists.
+            if try doc.get(obj: .ROOT, key: "texts") == nil {
+                _ = try doc.putObject(obj: .ROOT, key: "texts", ty: .List)
+            }
+            if try doc.get(obj: .ROOT, key: "images") == nil {
+                _ = try doc.putObject(obj: .ROOT, key: "images", ty: .List)
+            }
             // Sanity-check that the existing tree decodes to our model.
             _ = try AutomergeDecoder(doc: doc).decode(CanvasDoc.self)
         }
@@ -127,6 +136,8 @@ final class BoardDocument {
         _ = try doc.putObject(obj: .ROOT, key: "snapshots", ty: .List)
         let sketchId = try doc.putObject(obj: .ROOT, key: "activeSketch", ty: .Map)
         _ = try doc.putObject(obj: sketchId, key: "strokes", ty: .List)
+        _ = try doc.putObject(obj: .ROOT, key: "texts", ty: .List)
+        _ = try doc.putObject(obj: .ROOT, key: "images", ty: .List)
     }
 
     // MARK: - Snapshotting the Swift value
@@ -373,6 +384,82 @@ final class BoardDocument {
         throw BoardError.malformedDocument("moveSnapshot: no snapshot with id \(target)")
     }
 
+    // MARK: - Text notes
+
+    func addText(_ note: TextNote) throws {
+        let list = try textsListId()
+        let endIndex = doc.length(obj: list)
+        let map = try doc.insertObject(obj: list, index: endIndex, ty: .Map)
+        try doc.put(obj: map, key: "id", value: .String(note.id.uuidString))
+        try doc.put(obj: map, key: "x", value: .F64(note.x))
+        try doc.put(obj: map, key: "y", value: .F64(note.y))
+        try doc.put(obj: map, key: "z", value: .Int(Int64(note.z)))
+        try doc.put(obj: map, key: "text", value: .String(note.text))
+        try doc.put(obj: map, key: "fontSize", value: .F64(note.fontSize))
+        try doc.put(obj: map, key: "color", value: .Uint(UInt64(note.color)))
+    }
+
+    func updateText(id: UUID, text: String) throws {
+        guard let map = try findTextMap(id: id) else { return }
+        try doc.put(obj: map, key: "text", value: .String(text))
+    }
+
+    func moveText(id: UUID, to x: Double, y: Double) throws {
+        guard let map = try findTextMap(id: id) else { return }
+        try doc.put(obj: map, key: "x", value: .F64(x))
+        try doc.put(obj: map, key: "y", value: .F64(y))
+    }
+
+    func removeText(id: UUID) throws {
+        let list = try textsListId()
+        let count = doc.length(obj: list)
+        let target = id.uuidString
+        for i in 0..<count {
+            guard case let .Object(map, .Map) = try doc.get(obj: list, index: i) else { continue }
+            guard case let .Scalar(.String(idString)) = try doc.get(obj: map, key: "id") else { continue }
+            if idString == target {
+                try doc.delete(obj: list, index: i)
+                return
+            }
+        }
+    }
+
+    // MARK: - Image notes
+
+    func addImage(_ note: ImageNote) throws {
+        let list = try imagesListId()
+        let endIndex = doc.length(obj: list)
+        let map = try doc.insertObject(obj: list, index: endIndex, ty: .Map)
+        try doc.put(obj: map, key: "id", value: .String(note.id.uuidString))
+        try doc.put(obj: map, key: "x", value: .F64(note.x))
+        try doc.put(obj: map, key: "y", value: .F64(note.y))
+        try doc.put(obj: map, key: "z", value: .Int(Int64(note.z)))
+        try doc.put(obj: map, key: "width", value: .F64(note.width))
+        try doc.put(obj: map, key: "height", value: .F64(note.height))
+        try doc.put(obj: map, key: "data", value: .Bytes(note.data))
+        try doc.put(obj: map, key: "format", value: .String(note.format))
+    }
+
+    func moveImage(id: UUID, to x: Double, y: Double) throws {
+        guard let map = try findImageMap(id: id) else { return }
+        try doc.put(obj: map, key: "x", value: .F64(x))
+        try doc.put(obj: map, key: "y", value: .F64(y))
+    }
+
+    func removeImage(id: UUID) throws {
+        let list = try imagesListId()
+        let count = doc.length(obj: list)
+        let target = id.uuidString
+        for i in 0..<count {
+            guard case let .Object(map, .Map) = try doc.get(obj: list, index: i) else { continue }
+            guard case let .Scalar(.String(idString)) = try doc.get(obj: map, key: "id") else { continue }
+            if idString == target {
+                try doc.delete(obj: list, index: i)
+                return
+            }
+        }
+    }
+
     // MARK: - Internal helpers
 
     /// Write a `Stroke` value into an existing strokes list at `index`.
@@ -409,5 +496,41 @@ final class BoardDocument {
         guard case let .Object(id, .List) = try doc.get(obj: .ROOT, key: "snapshots")
         else { throw BoardError.malformedDocument("root.snapshots is not a list") }
         return id
+    }
+
+    private func textsListId() throws -> ObjId {
+        guard case let .Object(id, .List) = try doc.get(obj: .ROOT, key: "texts")
+        else { throw BoardError.malformedDocument("root.texts is not a list") }
+        return id
+    }
+
+    private func imagesListId() throws -> ObjId {
+        guard case let .Object(id, .List) = try doc.get(obj: .ROOT, key: "images")
+        else { throw BoardError.malformedDocument("root.images is not a list") }
+        return id
+    }
+
+    private func findTextMap(id: UUID) throws -> ObjId? {
+        let list = try textsListId()
+        let count = doc.length(obj: list)
+        let target = id.uuidString
+        for i in 0..<count {
+            guard case let .Object(map, .Map) = try doc.get(obj: list, index: i) else { continue }
+            guard case let .Scalar(.String(idString)) = try doc.get(obj: map, key: "id") else { continue }
+            if idString == target { return map }
+        }
+        return nil
+    }
+
+    private func findImageMap(id: UUID) throws -> ObjId? {
+        let list = try imagesListId()
+        let count = doc.length(obj: list)
+        let target = id.uuidString
+        for i in 0..<count {
+            guard case let .Object(map, .Map) = try doc.get(obj: list, index: i) else { continue }
+            guard case let .Scalar(.String(idString)) = try doc.get(obj: map, key: "id") else { continue }
+            if idString == target { return map }
+        }
+        return nil
     }
 }
