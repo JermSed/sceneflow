@@ -133,12 +133,29 @@ struct FieldView: View {
                 editingSnapshotId = nil
             }
         }
+        // Auto-reveal the sketch when a peer starts drawing
+        // (empty → non-empty transition on active strokes). The
+        // sketch stays open after that — even when the peer
+        // stops, the user can review what landed and capture it.
+        // We deliberately only fire on the 0 → N edge, so an old
+        // active sketch loaded from disk does NOT auto-open.
+        .onChange(of: store.canvas.activeSketch.strokes.count) { old, new in
+            if old == 0, new > 0, !sketchOpenedLocally {
+                sketchOpenedLocally = true
+            }
+        }
     }
 
     /// Single source of truth for "is the active sketch on screen
-    /// right now". OR-ed because either signal is enough.
+    /// right now". Only the local-open flag controls this — we
+    /// don't auto-show based on doc state, because old strokes
+    /// from a previous session shouldn't force the frame open
+    /// when the user re-enters a board. Live collab is preserved
+    /// by `.onChange` below: a 0 → N transition in active strokes
+    /// (i.e., a peer just started drawing) flips
+    /// `sketchOpenedLocally` so the user sees the collab arrive.
     private var isSketchVisible: Bool {
-        sketchOpenedLocally || !store.canvas.activeSketch.strokes.isEmpty
+        sketchOpenedLocally
     }
 
     /// Either the sketch is open OR a snapshot is being edited
