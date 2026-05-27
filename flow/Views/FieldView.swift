@@ -65,6 +65,16 @@ struct FieldView: View {
     /// drawing/erasing route to that snapshot's strokes list.
     @State private var editingSnapshotId: UUID?
 
+    /// "Trigger" binding from `BoardOpenView`'s toolbar Capture
+    /// button. The parent flips this from false → true to ask
+    /// for a capture; FieldView observes the change, performs
+    /// the capture at the current viewport center, and flips it
+    /// back. Using a binding (rather than a closure prop) keeps
+    /// the toolbar logic in `BoardOpenView` — where the rest of
+    /// the chrome lives — while keeping the placement math here
+    /// where the pan/scale state already is.
+    @Binding var captureRequest: Bool
+
     /// Logical size of the active sketch and of each snapshot tile.
     static let sketchSize = CGSize(width: 800, height: 600)
 
@@ -84,6 +94,12 @@ struct FieldView: View {
     @State private var draggingSnapshot: (id: UUID, translation: CGSize)?
     @State private var didCenter = false
 
+    /// Last container size we observed via GeometryReader. Captured
+    /// so capture-placement can compute the viewport center in
+    /// field coords without going through the GeometryReader proxy
+    /// from a button handler.
+    @State private var containerSize: CGSize = .zero
+
     var body: some View {
         GeometryReader { geo in
             ZStack {
@@ -96,6 +112,7 @@ struct FieldView: View {
                 // 2. Everything that lives "on" the plane:
                 //    grid + sketch + snapshots, all transformed
                 //    together so they pan and zoom as one piece.
+                //
                 content(in: geo.size)
                     .scaleEffect(currentScale, anchor: .topLeading)
                     .offset(currentPan)
@@ -103,7 +120,11 @@ struct FieldView: View {
             }
             .clipped()
             .simultaneousGesture(magnifyGesture)
-            .onAppear { centerSketchOnce(in: geo.size) }
+            .onAppear {
+                containerSize = geo.size
+                centerSketchOnce(in: geo.size)
+            }
+            .onChange(of: geo.size) { _, new in containerSize = new }
         }
         // safeAreaInset puts the pill above the home indicator
         // (and any future bottom system chrome) by inserting it
@@ -144,6 +165,49 @@ struct FieldView: View {
                 sketchOpenedLocally = true
             }
         }
+        // Toolbar Capture button hand-off. The parent sets
+        // `captureRequest = true`; we honor it here where we
+        // have pan/scale/containerSize to place the snapshot at
+        // the viewport center, then reset the flag so the next
+        // tap fires again.
+        .onChange(of: captureRequest) { _, requested in
+            if requested {
+                performCaptureAtViewportCenter()
+                captureRequest = false
+            }
+        }
+    }
+
+    /// Place a new snapshot so it's visually centered on where
+    /// the user is currently looking. Computed by inverting the
+    /// view transform: `field = (screen - pan) / scale`, then
+    /// offsetting by half the tile so the placement is the tile's
+    /// top-left rather than its center.
+    private func performCaptureAtViewportCenter() {
+        guard !store.canvas.activeSketch.strokes.isEmpty else { return }
+
+        let screenCenter = CGPoint(
+            x: containerSize.width / 2,
+            y: containerSize.height / 2)
+        let fieldCenter = CGPoint(
+            x: (screenCenter.x - currentPan.width) / currentScale,
+            y: (screenCenter.y - currentPan.height) / currentScale)
+        let topLeft = CGPoint(
+            x: fieldCenter.x - Self.sketchSize.width / 2,
+            y: fieldCenter.y - Self.sketchSize.height / 2)
+
+        let z = store.canvas.snapshots.count
+        do {
+            _ = try store.captureSnapshot(
+                at: Double(topLeft.x),
+                y: Double(topLeft.y),
+                z: z)
+            // Capture cleared the active sketch; close the local
+            // reveal so the field returns to "snapshots only".
+            sketchOpenedLocally = false
+        } catch {
+            assertionFailure("capture failed: \(error)")
+        }
     }
 
     /// Single source of truth for "is the active sketch on screen
@@ -169,10 +233,13 @@ struct FieldView: View {
     @ViewBuilder
     private func content(in containerSize: CGSize) -> some View {
         ZStack(alignment: .topLeading) {
-            // Faint dot grid. Sized to comfortably cover any
-            // reasonable pan range; the grid is part of the plane,
-            // so we want it to extend well beyond the viewport.
+            // Faint dot grid. `.drawingGroup()` caches the dot
+            // pattern as a single Metal-backed bitmap so panning
+            // the field doesn't re-rasterize thousands of dots
+            // each frame — the cached layer just translates.
+            // Hit testing is off either way, so caching is safe.
             dotGrid(size: gridCoverage(containerSize: containerSize))
+                .drawingGroup(opaque: false)
                 .offset(x: gridOrigin(containerSize: containerSize).x,
                         y: gridOrigin(containerSize: containerSize).y)
                 .allowsHitTesting(false)
@@ -384,14 +451,15 @@ struct FieldView: View {
 
     // MARK: - Grid
 
-    /// Generous grid coverage so panning doesn't reveal the edge
-    /// of the dot pattern in practice. Three viewport sizes in
-    /// each direction is plenty for casual use; if the user pans
-    /// very far we'll re-center next time the view appears.
+    /// Grid coverage. Three viewport-widths in each direction is
+    /// generous for casual use without blowing the cached bitmap
+    /// out to silly pixel dimensions. If the user pans very far,
+    /// the grid will fall off; the backdrop color extends past it
+    /// so they won't see a sharp edge of "the world ends here".
     private func gridCoverage(containerSize: CGSize) -> CGSize {
         CGSize(
-            width: max(containerSize.width * 6, Self.sketchSize.width * 8),
-            height: max(containerSize.height * 6, Self.sketchSize.height * 8))
+            width: max(containerSize.width * 3, Self.sketchSize.width * 4),
+            height: max(containerSize.height * 3, Self.sketchSize.height * 4))
     }
 
     private func gridOrigin(containerSize: CGSize) -> CGPoint {

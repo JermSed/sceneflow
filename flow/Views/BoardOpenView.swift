@@ -29,6 +29,11 @@ struct BoardOpenView: View {
     /// strokes (e.g. a peer is mid-draw) regardless of this flag.
     @State private var sketchOpenedLocally: Bool = false
 
+    /// Trigger flag for capture. The toolbar button flips this
+    /// to true; `FieldView` observes the change, performs the
+    /// capture at its current viewport center, then resets it.
+    @State private var captureRequest: Bool = false
+
     var body: some View {
         Group {
             if let store, let summary = library.boards.first(where: { $0.id == boardId }) {
@@ -40,7 +45,8 @@ struct BoardOpenView: View {
                         tool: $tool,
                         color: $color,
                         width: $width,
-                        sketchOpenedLocally: $sketchOpenedLocally)
+                        sketchOpenedLocally: $sketchOpenedLocally,
+                        captureRequest: $captureRequest)
 
                     // Slim banner that drops down from the top of
                     // the board when the sync socket isn't ready.
@@ -211,7 +217,9 @@ struct BoardOpenView: View {
 
         ToolbarItem(placement: .primaryAction) {
             Button {
-                capture(in: store)
+                // Hand off to FieldView, which knows the current
+                // viewport center and places the snapshot there.
+                captureRequest = true
             } label: {
                 Label("Capture", systemImage: "camera")
             }
@@ -233,26 +241,8 @@ struct BoardOpenView: View {
         sketchOpenedLocally || !store.canvas.activeSketch.strokes.isEmpty
     }
 
-    private func capture(in store: BoardStore) {
-        do {
-            // Drop new snapshots in a horizontal row to the right of
-            // anything already placed, so consecutive captures don't
-            // stack on top of each other. The user is free to drag
-            // them anywhere afterward.
-            let gap: Double = 60
-            let tileW = Double(FieldView.sketchSize.width)
-            let snapshots = store.canvas.snapshots
-            let baselineX = tileW + gap   // first snapshot sits just right of the sketch
-            let nextX = snapshots
-                .map { $0.x + tileW + gap }
-                .max() ?? baselineX
-            let z = snapshots.count
-            _ = try store.captureSnapshot(at: nextX, y: 0, z: z)
-            // Capture clears the active sketch; close the local
-            // reveal too so the field returns to "snapshots only".
-            sketchOpenedLocally = false
-        } catch {
-            assertionFailure("capture failed: \(error)")
-        }
-    }
+    // Capture placement was moved into FieldView so it can use
+    // pan/scale to drop the new snapshot at the viewport center.
+    // The toolbar button just toggles `captureRequest` and
+    // FieldView's `.onChange` does the work.
 }
