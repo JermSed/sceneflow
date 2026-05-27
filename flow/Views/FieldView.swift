@@ -54,6 +54,11 @@ struct FieldView: View {
     /// Active stroke width.
     @Binding var width: Double
 
+    /// Whether the user has locally asked to see the sketch frame.
+    /// True OR a non-empty active sketch (e.g. a peer is drawing)
+    /// reveals the frame; otherwise the field shows snapshots only.
+    @Binding var sketchOpenedLocally: Bool
+
     /// Logical size of the active sketch and of each snapshot tile.
     static let sketchSize = CGSize(width: 800, height: 600)
 
@@ -100,11 +105,24 @@ struct FieldView: View {
         // bottom edge — that's where the previous .overlay version
         // disappeared on iPad.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            ToolbarPill(tool: $tool, color: $color, width: $width)
-                .padding(.bottom, 12)
-                .padding(.top, 8)
-                .frame(maxWidth: .infinity)
+            // The drawing tool pill only makes sense when there's
+            // a sketch surface to act on. Hide it when the field
+            // is showing snapshots only.
+            if isSketchVisible {
+                ToolbarPill(tool: $tool, color: $color, width: $width)
+                    .padding(.bottom, 12)
+                    .padding(.top, 8)
+                    .frame(maxWidth: .infinity)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
+        .animation(.easeInOut(duration: 0.18), value: isSketchVisible)
+    }
+
+    /// Single source of truth for "is the active sketch on screen
+    /// right now". OR-ed because either signal is enough.
+    private var isSketchVisible: Bool {
+        sketchOpenedLocally || !store.canvas.activeSketch.strokes.isEmpty
     }
 
     // MARK: - Transformed content
@@ -120,14 +138,19 @@ struct FieldView: View {
                         y: gridOrigin(containerSize: containerSize).y)
                 .allowsHitTesting(false)
 
-            // Active sketch frame at field origin.
-            frame(
-                title: "Sketch",
-                titleColor: .accentColor,
-                isActive: true,
-                content: { activeSketchBody }
-            )
-            .offset(x: 0, y: 0)
+            // Active sketch frame at field origin. Shown when:
+            //  • the user opened it locally with "+", OR
+            //  • the doc says the active sketch has strokes
+            //    (someone else is mid-draw — keep collab live).
+            if isSketchVisible {
+                frame(
+                    title: "Sketch",
+                    titleColor: .accentColor,
+                    isActive: true,
+                    content: { activeSketchBody }
+                )
+                .offset(x: 0, y: 0)
+            }
 
             // Captured snapshots.
             ForEach(Array(store.canvas.snapshots.enumerated()), id: \.element.id) { idx, snap in

@@ -23,6 +23,12 @@ struct BoardOpenView: View {
     @State private var color: UInt32 = DrawingPalette.colors.first ?? 0x111111FF
     @State private var width: Double = DrawingPalette.widths[1]   // default = "normal"
 
+    /// Whether the user has explicitly asked to see the active
+    /// sketch frame (tapped "+"). Independent of the doc state
+    /// — the frame also auto-shows when the sketch contains
+    /// strokes (e.g. a peer is mid-draw) regardless of this flag.
+    @State private var sketchOpenedLocally: Bool = false
+
     var body: some View {
         Group {
             if let store, let summary = library.boards.first(where: { $0.id == boardId }) {
@@ -33,7 +39,8 @@ struct BoardOpenView: View {
                         presence: library.presence,
                         tool: $tool,
                         color: $color,
-                        width: $width)
+                        width: $width,
+                        sketchOpenedLocally: $sketchOpenedLocally)
 
                     // Slim banner that drops down from the top of
                     // the board when the sync socket isn't ready.
@@ -129,14 +136,30 @@ struct BoardOpenView: View {
             .accessibilityLabel("Your name")
         }
 
+        // Two contextual buttons. The sketch is hidden by default;
+        // "+" reveals it; once visible, Capture freezes it back
+        // into a snapshot and hides it again. We keep both visible
+        // so the user can see where each lives, and gate them on
+        // sketch state for affordance.
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                sketchOpenedLocally = true
+            } label: {
+                Label("New sketch", systemImage: "square.and.pencil")
+            }
+            // Already open (locally or because the doc has strokes)
+            // — disable so "+" doesn't read as a no-op.
+            .disabled(isSketchVisible(store: store))
+        }
+
         ToolbarItem(placement: .primaryAction) {
             Button {
                 capture(in: store)
             } label: {
                 Label("Capture", systemImage: "camera")
             }
-            // Capturing an empty sketch would create a blank snapshot
-            // — disable until there's something to freeze.
+            // Capturing an empty sketch would create a blank
+            // snapshot. Only enable when there's something to freeze.
             .disabled(store.canvas.activeSketch.strokes.isEmpty)
         }
 
@@ -147,6 +170,10 @@ struct BoardOpenView: View {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
         }
+    }
+
+    private func isSketchVisible(store: BoardStore) -> Bool {
+        sketchOpenedLocally || !store.canvas.activeSketch.strokes.isEmpty
     }
 
     private func capture(in store: BoardStore) {
@@ -164,6 +191,9 @@ struct BoardOpenView: View {
                 .max() ?? baselineX
             let z = snapshots.count
             _ = try store.captureSnapshot(at: nextX, y: 0, z: z)
+            // Capture clears the active sketch; close the local
+            // reveal too so the field returns to "snapshots only".
+            sketchOpenedLocally = false
         } catch {
             assertionFailure("capture failed: \(error)")
         }
