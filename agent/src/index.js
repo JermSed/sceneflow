@@ -23,14 +23,26 @@ import { composeReply } from "./respond.js";
 import { CUT_RE, parseCutRequest, runCut, reportToComment } from "./cut/run.js";
 
 const args = process.argv.slice(2);
-const docArg = args.find(a => !a.startsWith("--"));
+// The first bare word that is not the value of a preceding flag.
+const VALUELESS = new Set([]);
+const docArg = (() => {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith("--")) { if (!VALUELESS.has(args[i])) i++; continue; }
+    return args[i];
+  }
+  return null;
+})();
+const nameFlag = args.indexOf("--name");
+const boardName =
+  nameFlag !== -1 ? args[nameFlag + 1]
+  : process.env.SCENEFLOW_BOARD_NAME ?? "Sceneflow board";
 const relayFlag = args.indexOf("--relay");
 const relayUrl =
   relayFlag !== -1 ? args[relayFlag + 1]
   : process.env.SCENEFLOW_RELAY ?? "ws://localhost:3030";
 
 if (!docArg) {
-  console.error("usage: node src/index.js <documentId> [--relay ws://host:port]");
+  console.error("usage: node src/index.js <documentId> [--name 'Board name'] [--relay ws://host:port]");
   process.exit(1);
 }
 
@@ -83,9 +95,15 @@ async function scan() {
           // and get an answer. A mention that asks for a CUT starts
           // the multi-app run: Drive -> match -> Resolve -> Todoist,
           // reported back as a comment on this same board.
-          const text = CUT_RE.test(mention.text)
+          const request = CUT_RE.test(mention.text) ? parseCutRequest(mention.text) : null;
+          const text = request
             ? reportToComment(await runCut(doc, {
-                ...parseCutRequest(mention.text),
+                ...request,
+                // A name typed into the comment wins over the flag —
+                // whoever asks for the cut knows what the board is
+                // called. Spreading `request` first would clobber the
+                // flag with its own `undefined`, so resolve it here.
+                boardName: request.boardName ?? boardName,
                 docId: docArg,
                 onLog: m => console.log(`[cut] ${m}`),
               }))

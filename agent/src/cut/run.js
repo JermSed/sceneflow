@@ -72,6 +72,10 @@ export function parseCutRequest(text = "") {
     return (m?.[1] ?? m?.[2] ?? m?.[3] ?? "").trim();
   };
   return {
+    // The board's name, for the Resolve timeline. Without it the
+    // timeline is named after the share token, which is the first
+    // thing anyone opening the project sees.
+    boardName: grab("name|board") || undefined,
     driveFolder: grab("folder|drive") || DEFAULTS.driveFolder,
     todoistProject: grab("list|todoist") || DEFAULTS.todoistProject,
     resolveProject: grab("project|resolve") || DEFAULTS.resolveProject,
