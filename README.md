@@ -7,7 +7,7 @@ real footage — then files every shot you *didn't* film as a shoot list.
 
 **Team:** Jeremy Sedillo — sedillojerm05@gmail.com
 **Repository:** https://github.com/JermSed/sceneflow
-**Demo video:** PASTE_LINK_HERE
+**Demo video:** https://www.loom.com/share/246ff2bba8324d8a860407fea2394962
 
 ---
 
@@ -353,7 +353,7 @@ Idempotency on real infrastructure, not just in the fakes.
 
 ## 05 · Demo video
 
-**→ [Two-minute demo](PASTE_LINK_HERE)**
+**→ [Two-minute demo](https://www.loom.com/share/246ff2bba8324d8a860407fea2394962)**
 
 ---
 
