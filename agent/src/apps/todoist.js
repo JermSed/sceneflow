@@ -147,6 +147,9 @@ export class Todoist {
       priority,
       labels,
     });
+    // v1 stopped returning `url`; it is deterministic from the id, and
+    // a report full of nulls is a report nobody can click through.
+    task.url ??= `https://app.todoist.com/app/task/${task.id}`;
     existingTasks.push(task);
     return { task, created: true };
   }

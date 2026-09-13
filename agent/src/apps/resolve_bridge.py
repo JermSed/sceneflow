@@ -356,19 +356,29 @@ def mark_missing(timeline, project, beats):
     start = int(timeline.GetStartFrame() or 0)
     cursor = start
     added = []
+    # Resolve allows one marker per frame, and consecutive unshot
+    # beats all belong at the same point in the cut — so a naive
+    # placement silently drops every gap after the first in a run.
+    # Nudge each subsequent marker forward a frame; they stay grouped
+    # where the missing shots go, and all of them survive.
+    used = set()
     for beat in beats:
         if beat.get("clipPath"):
             cursor += max(1, int(round((beat.get("durationSeconds") or 3) * fps)))
             continue
+        frame = max(0, cursor - start)
+        while frame in used:
+            frame += 1
         ok = timeline.AddMarker(
-            max(0, cursor - start),
+            frame,
             "Red",
             f"MISSING - Frame {beat['index']}",
             f"{beat.get('description', '')} [sf:{beat.get('key', '')}]",
             1,
         )
         if ok:
-            added.append({"beat": beat["index"], "frame": cursor - start})
+            used.add(frame)
+            added.append({"beat": beat["index"], "frame": frame})
     return added
 
 
