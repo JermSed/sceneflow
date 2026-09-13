@@ -189,10 +189,18 @@ export async function runCut(doc, options = {}) {
   // ---- 4. Google Drive: pull down only what made the cut ---------
   const byId = new Map(clips.map(c => [c.id, c]));
   await stage(report, "drive.download", async () => {
+    const totalMB = matched.reduce((n, a) => n + (byId.get(a.clipId)?.sizeBytes ?? 0), 0) / 1e6;
+    if (totalMB > 500) {
+      // Worth saying out loud: a multi-gigabyte pull is minutes of
+      // silence otherwise, and the most likely reason someone thinks
+      // the agent has hung.
+      log(`Drive: ${totalMB.toFixed(0)} MB to fetch — this is the slow stage. Cached clips are reused on a re-run.`);
+    }
     for (const a of matched) {
       const clip = byId.get(a.clipId);
       a.clipName = clip.name;
-      a.clipPath = await drive.downloadClip(clip, c => log(`Drive: downloading ${c.name}`));
+      a.clipPath = await drive.downloadClip(clip, c =>
+        log(`Drive: downloading ${c.name} (${((c.sizeBytes ?? 0) / 1e6).toFixed(0)} MB)`));
       // Fall back to the clip's own length when the model declined
       // to pick a duration — better a full clip than a zero-length one.
       a.durationSeconds ??= clip.durationSeconds ? Math.min(6, clip.durationSeconds) : 3;

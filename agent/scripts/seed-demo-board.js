@@ -24,12 +24,17 @@ const flag = (n, d) => { const i = args.indexOf(`--${n}`); return i === -1 ? d :
 const relayUrl = flag("relay", process.env.SCENEFLOW_RELAY ?? "ws://localhost:3030");
 
 const DEFAULT_SHOTS = [
-  "WIDE - alley entrance, dusk",
-  "MEDIUM - Ana turns toward the door",
-  "CLOSE UP - hand on the door handle",
-  "INSERT - the note pinned to the frame",
-  "OTS - Ana reads it",
-  "WIDE - the alley empties out",
+  // Eight beats against six clips. Two of these were never shot —
+  // that is the point of the demo, not an oversight: they are what
+  // lands on the Todoist shoot list.
+  "WIDE - the whole table, board in the middle, four players",
+  "CLOSE UP - hands shaking and rolling the dice",
+  "INSERT - the longest road card sitting on the table",
+  "CLOSE UP - hand placing a settlement on the board",
+  "WIDE - reactions around the table after the roll",
+  "OTS - over a player's shoulder at their resource cards",
+  "CLOSE UP - hands sorting resource cards",
+  "WIDE - the finished board at the end of the night",
 ];
 const shots = (flag("shots", "") || "").trim()
   ? flag("shots").split(",").map(s => s.trim()).filter(Boolean)
