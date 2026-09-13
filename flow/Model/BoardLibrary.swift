@@ -152,7 +152,8 @@ final class BoardLibrary: ObservableObject {
 
     init(
         rootURL: URL,
-        relayURL: URL = URL(string: "ws://localhost:3030")!
+        relayURL: URL = URL(string: "ws://localhost:3030")!,
+        presenceRelayURL: URL? = nil
     ) throws {
         try FileManager.default.createDirectory(
             at: rootURL, withIntermediateDirectories: true)
@@ -170,7 +171,12 @@ final class BoardLibrary: ObservableObject {
         // Presence rides a separate WebSocket (sync-server/presence.js)
         // because automerge-repo-swift 0.3.2's ephemeral-message
         // receive path is stubbed out. See PresenceCoordinator.swift.
-        self.presence = PresenceCoordinator()
+        // Default behavior: derive the presence URL from the sync URL
+        // by swapping the port, so pointing sync at a non-local host
+        // automatically points presence at the same host.
+        let resolvedPresenceURL = presenceRelayURL
+            ?? PresenceCoordinator.relayURL(matchingSyncRelay: relayURL)
+        self.presence = PresenceCoordinator(relayURL: resolvedPresenceURL)
 
         try loadIndex()
         startSync()

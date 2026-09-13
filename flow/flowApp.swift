@@ -38,7 +38,13 @@ struct flowApp: App {
 
     var body: some Scene {
         WindowGroup {
-            BoardListView(path: $navigationPath)
+            BoardListView(path: $navigationPath) { pastedText in
+                // Paste-to-join: same parse + join path as the URL
+                // handler, minus the OS routing.
+                if let payload = BoardShareLink.parse(pastedText) {
+                    join(payload)
+                }
+            }
                 .environmentObject(library)
                 .onOpenURL { url in
                     handleIncomingURL(url)
@@ -71,30 +77,19 @@ struct flowApp: App {
     ///
     /// Anything else is dropped silently — the OS only routes URLs
     /// of schemes we registered in Info.plist, so we shouldn't see
-    /// foreign schemes here in normal use.
+    /// foreign schemes here in normal use. Parsing itself lives in
+    /// `BoardShareLink.parse` so this path and the paste-to-join sheet
+    /// agree on the format.
     private func handleIncomingURL(_ url: URL) {
-        guard url.scheme == "sceneflow" else { return }
+        guard let payload = BoardShareLink.parse(url.absoluteString) else { return }
+        join(payload)
+    }
 
-        // Two URL shapes to be tolerant of:
-        //   sceneflow://board/<id>   → host = "board", path = "/<id>"
-        //   sceneflow:/board/<id>    → host = nil, path = "/board/<id>"
-        // The first is what we generate; the second is what some
-        // sloppy share-sheet pasters produce. Accept both.
-        let path = (url.host.map { [$0] } ?? []) + url.pathComponents.filter { $0 != "/" }
-        guard path.count >= 2, path[0] == "board" else { return }
-        let docIdString = path[1]
-        guard let docId = DocumentId(docIdString) else { return }
-
-        // The sender includes their local title as `?name=…` so the
-        // joined-side row reads "<title> - shared" instead of an
-        // anonymous "Shared board". Fall back gracefully if the
-        // query is missing (older shares, hand-typed URLs).
-        let senderName = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-            .queryItems?
-            .first(where: { $0.name == "name" })?
-            .value?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let joinedName = (senderName?.isEmpty == false ? "\(senderName!) - shared" : "Shared board")
+    /// Join from a `BoardShareLink.Payload`, whichever door it came
+    /// through (OS-routed URL, or text pasted into the join sheet).
+    private func join(_ payload: BoardShareLink.Payload) {
+        let docId = payload.documentId
+        let joinedName = payload.senderName.map { "\($0) - shared" } ?? "Shared board"
 
         pendingJoin = PendingJoin(documentId: docId, status: .joining)
         Task {

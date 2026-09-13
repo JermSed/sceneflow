@@ -1,0 +1,6 @@
+node_modules/
+package-lock.json
+
+# Local credentials, cached media, and run reports — never committed.
+.state/
+.env

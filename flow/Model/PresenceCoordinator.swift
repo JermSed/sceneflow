@@ -149,7 +149,7 @@ final class PresenceCoordinator: ObservableObject {
     private var transport: PresenceTransport
     private var pruneTimer: AnyCancellable?
 
-    init(relayURL: URL = URL(string: "ws://localhost:3031")!) {
+    init(relayURL: URL = PresenceCoordinator.defaultRelayURL) {
         self.relayURL = relayURL
         self.localPeerId = UUID().uuidString
         self.localColor = Self.color(for: localPeerId)
@@ -159,6 +159,32 @@ final class PresenceCoordinator: ObservableObject {
         }
         self.transport.connect()
         startPruneTimer()
+    }
+
+    /// Default presence relay URL — kept in one place so
+    /// `BoardLibrary` and tests don't drift from each other.
+    /// `nonisolated` so it can appear in default-argument expressions
+    /// outside the main actor (the URL itself is a value type and
+    /// safe to read from any context).
+    nonisolated static let defaultRelayURL = URL(string: "ws://localhost:3031")!
+
+    /// Derive the presence relay URL from the doc-sync relay URL by
+    /// swapping the port. The two relays live side-by-side in
+    /// `sync-server/` and are deployed together, so a user pointing
+    /// the sync URL at a non-local host should automatically get
+    /// presence pointed at the same host.
+    ///
+    /// If `syncRelayURL` has no port (or an unparseable one), this
+    /// returns the default presence URL — better to talk to nothing
+    /// than to talk to the wrong host with wrong assumptions.
+    nonisolated static func relayURL(matchingSyncRelay syncRelayURL: URL,
+                                     presencePort: Int = 3031) -> URL {
+        guard var components = URLComponents(url: syncRelayURL,
+                                             resolvingAgainstBaseURL: false) else {
+            return defaultRelayURL
+        }
+        components.port = presencePort
+        return components.url ?? defaultRelayURL
     }
 
     // MARK: Sending

@@ -1,0 +1,96 @@
+{
+  "matcher": "filename-baseline",
+  "threshold": 0.55,
+  "runs": 1,
+  "ranAt": "2026-09-13T19:33:40.151Z",
+  "invariantViolations": 0,
+  "results": [
+    {
+      "fixture": "tidy",
+      "hard": false,
+      "beats": 4,
+      "clips": 5,
+      "precision": 1,
+      "recall": 1,
+      "declineAccuracy": null,
+      "exactRate": 1,
+      "falseFills": 0,
+      "wrongMatches": 0,
+      "misses": 0,
+      "exactStdev": 0,
+      "runs": [
+        {
+          "shouldMatch": 4,
+          "shouldDecline": 0,
+          "correctMatch": 4,
+          "falseFill": 0,
+          "wrongMatch": 0,
+          "miss": 0,
+          "correctDecline": 0,
+          "precision": 1,
+          "recall": 1,
+          "declineAccuracy": null,
+          "exact": true
+        }
+      ]
+    },
+    {
+      "fixture": "gaps",
+      "hard": false,
+      "beats": 6,
+      "clips": 2,
+      "precision": 1,
+      "recall": 1,
+      "declineAccuracy": 1,
+      "exactRate": 1,
+      "falseFills": 0,
+      "wrongMatches": 0,
+      "misses": 0,
+      "exactStdev": 0,
+      "runs": [
+        {
+          "shouldMatch": 2,
+          "shouldDecline": 4,
+          "correctMatch": 2,
+          "falseFill": 0,
+          "wrongMatch": 0,
+          "miss": 0,
+          "correctDecline": 4,
+          "precision": 1,
+          "recall": 1,
+          "declineAccuracy": 1,
+          "exact": true
+        }
+      ]
+    },
+    {
+      "fixture": "carddump",
+      "hard": true,
+      "beats": 3,
+      "clips": 4,
+      "precision": null,
+      "recall": 0,
+      "declineAccuracy": null,
+      "exactRate": 0,
+      "falseFills": 0,
+      "wrongMatches": 0,
+      "misses": 3,
+      "exactStdev": 0,
+      "runs": [
+        {
+          "shouldMatch": 3,
+          "shouldDecline": 0,
+          "correctMatch": 0,
+          "falseFill": 0,
+          "wrongMatch": 0,
+          "miss": 3,
+          "correctDecline": 0,
+          "precision": null,
+          "recall": 0,
+          "declineAccuracy": null,
+          "exact": false
+        }
+      ]
+    }
+  ]
+}

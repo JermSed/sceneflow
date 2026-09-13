@@ -996,7 +996,12 @@ struct FieldView: View {
                     openedCommentId = nil
                     try? store.removeComment(id: comment.id)
                 })
-            .frame(minWidth: 260)
+            // Fixed width + fit-to-content height. Without the
+            // vertical fixedSize, the popover measures an ideal
+            // height before the editor's text wraps and clips the
+            // header row off the top.
+            .frame(width: 320)
+            .fixedSize(horizontal: false, vertical: true)
             .presentationCompactAdaptation(.popover)
         }
     }

@@ -40,20 +40,20 @@ struct CommentPopover: View {
             editor
             footer
         }
-        .padding(14)
+        .padding(16)
     }
 
     private var header: some View {
         HStack(spacing: 10) {
             Circle()
                 .fill(PresenceCoordinator.color(for: comment.authorPeerId))
-                .frame(width: 22, height: 22)
+                .frame(width: 26, height: 26)
                 .overlay(Circle().stroke(Color.white, lineWidth: 1.5))
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(comment.authorName)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                 Text(Self.dateFormatter.string(from: comment.createdAt))
-                    .font(.system(size: 11))
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -72,7 +72,8 @@ struct CommentPopover: View {
             text: $draft,
             axis: .vertical)
             .textFieldStyle(.plain)
-            .lineLimit(2...6)
+            .font(.system(size: 14))
+            .lineLimit(3...8)
             .focused($focused)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)

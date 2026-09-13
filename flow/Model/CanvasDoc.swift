@@ -2,12 +2,11 @@
 //  CanvasDoc.swift
 //  flow
 //
-//  Phase 0 — the headless document model.
-//
-//  This is the Swift mirror of the Automerge document tree described in
-//  CLAUDE.md. Everything here is a plain `Codable` value type so the
-//  `AutomergeEncoder` / `AutomergeDecoder` pair in automerge-swift can map
-//  it into / out of a CRDT document automatically.
+//  The headless document model — the Swift mirror of the Automerge
+//  document tree described in CLAUDE.md. Everything here is a plain
+//  `Codable` value type so the `AutomergeEncoder` / `AutomergeDecoder`
+//  pair in automerge-swift can map it into / out of a CRDT document
+//  automatically.
 //
 //  Design rules (from CLAUDE.md):
 //   • `strokes` and `points` are append-only lists → concurrent drawing
@@ -15,9 +14,9 @@
 //   • `Snapshot.x` / `y` / `z` are plain scalars → rearranging a snapshot
 //     in the spatial field resolves as last-write-wins, which is exactly
 //     what we want (the most recent placement sticks).
-//   • Snapshots are immutable once captured. Nothing in this type prevents
-//     mutation, but capture flows should never edit a `Snapshot.strokes`
-//     after the snapshot is added to `CanvasDoc.snapshots`.
+//   • Snapshots are editable across all peers: tapping a snapshot draws
+//     into its `strokes` list, and the same append-only merge semantics
+//     that protect the active sketch apply per-snapshot.
 //   • `pressure` is always captured even before we render variable-width
 //     strokes — cheaper to record now than to migrate the doc later.
 //
@@ -135,6 +134,12 @@ struct Comment: Codable, Hashable, Identifiable, Sendable {
     var text: String
     var createdAt: Date
     var isResolved: Bool
+    /// If this comment answers another comment, the id of the one it
+    /// answers. Optional so boards saved before threading existed
+    /// still decode (absent key → nil). Today only the board
+    /// assistant (agent/) authors replies; the UI treats a reply as
+    /// an ordinary pin until threaded rendering lands.
+    var replyTo: UUID? = nil
 }
 
 /// A line drawn between two snapshots, like an arrow in a

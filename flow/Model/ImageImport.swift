@@ -28,6 +28,16 @@ enum ImageImport {
     /// JPEG compression quality used when re-encoding photos.
     static let jpegQuality: CGFloat = 0.8
 
+    /// Hard byte cap for the PNG path. PNG has no lossy quality
+    /// knob, so a busy 1600px screenshot can still come out
+    /// multi-MB even after downscale — and every list-touching
+    /// edit will ship that whole blob through sync. If PNG
+    /// exceeds this, `bestEffortCompress` falls back to JPEG
+    /// (losing transparency, gaining ~10× compression). The
+    /// number is a working ceiling, not a measured limit; raise
+    /// it if real-world screenshots get clipped.
+    static let pngByteCeiling: Int = 1_000_000
+
     /// Take arbitrary bytes (PNG, JPEG, HEIF...) and produce a
     /// downscaled JPEG suitable for embedding in the doc. Returns
     /// nil if `ImageIO` can't decode the input.
@@ -60,10 +70,14 @@ enum ImageImport {
     }
 
     /// Best-effort decode + downscale. Picks PNG when the original
-    /// looked PNG-ish (preserves alpha), JPEG otherwise.
+    /// looked PNG-ish (preserves alpha) AND the encoded result fits
+    /// under `pngByteCeiling`. Falls back to JPEG otherwise — losing
+    /// transparency, but keeping the sync payload bounded.
     static func bestEffortCompress(_ source: Data) -> (data: Data, width: CGFloat, height: CGFloat, format: String)? {
         let looksLikePNG = source.starts(with: [0x89, 0x50, 0x4E, 0x47])
-        if looksLikePNG, let (d, w, h) = compressedPNG(source) {
+        if looksLikePNG,
+           let (d, w, h) = compressedPNG(source),
+           d.count <= pngByteCeiling {
             return (d, w, h, "png")
         }
         if let (d, w, h) = compressedJPEG(source) {

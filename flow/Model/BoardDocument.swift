@@ -13,17 +13,18 @@
 //      `CanvasDoc` value; this type handles encode / decode / persist /
 //      merge against the underlying `Automerge.Document`.
 //
-//  Phase 1 — fine-grained mutation API.
+//  Mutation API.
 //
-//  Phase 0 used `AutomergeEncoder.encode(wholeTree)` to seed and rewrite
-//  the doc. That works for a round-trip test but defeats the CRDT: if
-//  two clients both re-encode the whole tree after each edit, lists are
-//  replaced wholesale and concurrent appends overwrite each other
-//  instead of merging.
+//  An earlier phase used `AutomergeEncoder.encode(wholeTree)` to seed
+//  and rewrite the doc. That works for a round-trip test but defeats
+//  the CRDT: if two clients both re-encode the whole tree after each
+//  edit, lists are replaced wholesale and concurrent appends overwrite
+//  each other instead of merging.
 //
-//  Phase 1 mutates the doc at *paths* using `Document.put` / `insert` /
-//  `putObject` / `insertObject`. This is what makes the model's
-//  "append-only lists merge cleanly" promise actually true on the wire.
+//  The current code mutates the doc at *paths* using `Document.put` /
+//  `insert` / `putObject` / `insertObject`. This is what makes the
+//  model's "append-only lists merge cleanly" promise actually true on
+//  the wire.
 //
 //  Verified against automerge-swift 0.7.2 source (locally checked out
 //  in DerivedData), not training memory:
@@ -530,6 +531,11 @@ final class BoardDocument {
         try doc.put(obj: map, key: "text", value: .String(comment.text))
         try doc.put(obj: map, key: "createdAt", value: .Timestamp(comment.createdAt))
         try doc.put(obj: map, key: "isResolved", value: .Boolean(comment.isResolved))
+        // Written only when present: absent key ↔ nil keeps old-board
+        // bytes and new decoders agreeing in both directions.
+        if let replyTo = comment.replyTo {
+            try doc.put(obj: map, key: "replyTo", value: .String(replyTo.uuidString))
+        }
     }
 
     func updateCommentText(id: UUID, text: String) throws {

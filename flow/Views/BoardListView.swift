@@ -22,9 +22,17 @@ struct BoardListView: View {
     /// wondering what happened.
     @Binding var path: [UUID]
 
+    /// Called with whatever the user pasted into the join sheet.
+    /// `flowApp` owns the actual join flow (and its status banner),
+    /// so this view just hands the text up.
+    let onJoinShareText: (String) -> Void
+
     /// Sheet state for "rename board" — separate from the list so the
     /// row context-menu can just set this and the sheet observes it.
     @State private var renaming: BoardSummary?
+
+    /// Sheet state for "join a shared board".
+    @State private var joining = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -45,16 +53,24 @@ struct BoardListView: View {
                     try? library.rename(id: summary.id, to: newName)
                 }
             }
+            .sheet(isPresented: $joining) {
+                JoinBoardSheet { text in
+                    onJoinShareText(text)
+                }
+            }
         }
     }
 
     // MARK: - Pieces
 
     private var emptyState: some View {
-        ContentUnavailableView(
-            "No boards yet",
-            systemImage: "rectangle.on.rectangle",
-            description: Text("Tap + to start your first board."))
+        ContentUnavailableView {
+            Label("No boards yet", systemImage: "rectangle.on.rectangle")
+        } description: {
+            Text("Tap + to start your first board, or join one someone shared with you.")
+        } actions: {
+            Button("Join a shared board…") { joining = true }
+        }
     }
 
     private var boardList: some View {
@@ -81,7 +97,12 @@ struct BoardListView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                joining = true
+            } label: {
+                Label("Join Board", systemImage: "link")
+            }
             Button {
                 createBoard()
             } label: {
@@ -119,6 +140,63 @@ private struct BoardRow: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Join sheet
+
+/// Paste a share link (or just the bare token) to join a board.
+/// Validation is live via `BoardShareLink.parse` — the Join button only
+/// enables when the text actually parses, so there's no error state
+/// to design here. Join progress/failure is shown by `flowApp`'s
+/// banner after the sheet dismisses.
+private struct JoinBoardSheet: View {
+    let onJoin: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+
+    private var isValid: Bool { BoardShareLink.parse(text) != nil }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("sceneflow://board/…", text: $text, axis: .vertical)
+                        .lineLimit(2...4)
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        #endif
+                    PasteButton(payloadType: String.self) { strings in
+                        if let pasted = strings.first {
+                            // PasteButton delivers off the main actor.
+                            Task { @MainActor in text = pasted }
+                        }
+                    }
+                    .buttonBorderShape(.capsule)
+                } footer: {
+                    Text("Paste the link from the board's share sheet — or just the token after sceneflow://board/.")
+                }
+            }
+            .navigationTitle("Join Board")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Join") {
+                        onJoin(text)
+                        dismiss()
+                    }
+                    .disabled(!isValid)
+                }
+            }
+        }
     }
 }
 

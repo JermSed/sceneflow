@@ -5,12 +5,16 @@
   "description": "Local Automerge sync + presence relays for Sceneflow.",
   "type": "module",
   "scripts": {
-    "start": "concurrently --kill-others --names 'sync,presence' --prefix-colors 'cyan,magenta' 'automerge-repo-sync-server' 'node presence.js'",
-    "start:sync": "automerge-repo-sync-server",
+    "start": "concurrently --kill-others --names 'sync,presence' --prefix-colors 'cyan,magenta' 'node sync.js' 'node presence.js'",
+    "start:sync": "node sync.js",
     "start:presence": "node presence.js"
   },
   "dependencies": {
+    "@automerge/automerge-repo": "^1.2.1",
+    "@automerge/automerge-repo-network-websocket": "^1.2.1",
+    "@automerge/automerge-repo-storage-nodefs": "^1.2.1",
     "@automerge/automerge-repo-sync-server": "^0.2.8",
+    "cbor-x": "^1.6.4",
     "concurrently": "^9.0.0",
     "ws": "^8.18.0"
   }

@@ -1,0 +1,27 @@
+{
+  "name": "sceneflow-assistant",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Headless AI peer for Sceneflow boards. Answers @assistant comments, and on \"@claude cut\" assembles a graded DaVinci Resolve timeline from Google Drive footage and files every unshot storyboard beat to Todoist.",
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/index.js",
+    "cut": "node --env-file-if-exists=.env src/cut-cli.js",
+    "auth:drive": "node --env-file-if-exists=.env scripts/auth-drive.js",
+    "test": "node --test test/*.test.js",
+    "eval": "node --env-file-if-exists=.env eval/run-eval.js",
+    "eval:live": "node --env-file-if-exists=.env eval/live-smoke.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.0",
+    "@automerge/automerge": "^2.2.9",
+    "@automerge/automerge-repo": "^1.2.1",
+    "@automerge/automerge-repo-network-websocket": "^1.2.1",
+    "@resvg/resvg-js": "^2.6.2",
+    "googleapis": "^180.0.0",
+    "open": "^11.0.3"
+  },
+  "engines": {
+    "node": ">=20.12"
+  }
+}
