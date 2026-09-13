@@ -17,6 +17,8 @@
 // eager model fails, and averaging it into an overall score is how
 // you hide the failure.
 
+import { CDL_RANGE } from "../src/cut/match.js";
+
 /** Score one reconciled cut against ground truth. */
 export function score(assignments, truth) {
   const m = {
@@ -71,11 +73,13 @@ export function checkInvariants(beats, clips, cut) {
   for (const a of cut.assignments) {
     const g = a.cdl;
     if (!g) { violations.push(`beat ${a.index}: no grade`); continue; }
-    const inRange = (v, lo, hi) => v.every(n => Number.isFinite(n) && n >= lo && n <= hi);
-    if (!inRange(g.slope, 0.5, 2) || !inRange(g.offset, -0.2, 0.2) || !inRange(g.power, 0.5, 2)) {
+    // Same range object the clamp uses, so the check and the thing it
+    // checks cannot drift apart.
+    const inRange = (v, [lo, hi]) => v.every(n => Number.isFinite(n) && n >= lo && n <= hi);
+    if (!inRange(g.slope, CDL_RANGE.slope) || !inRange(g.offset, CDL_RANGE.offset) || !inRange(g.power, CDL_RANGE.power)) {
       violations.push(`beat ${a.index}: grade out of range`);
     }
-    if (!(g.saturation > 0 && g.saturation <= 2)) violations.push(`beat ${a.index}: saturation ${g.saturation}`);
+    if (!inRange([g.saturation], CDL_RANGE.saturation)) violations.push(`beat ${a.index}: saturation ${g.saturation}`);
   }
   return violations;
 }

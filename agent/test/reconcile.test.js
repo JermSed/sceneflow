@@ -4,7 +4,7 @@
 // the cases that would otherwise reach Resolve and Todoist.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reconcile, filenameBaseline, MATCH_THRESHOLD } from "../src/cut/match.js";
+import { reconcile, filenameBaseline, MATCH_THRESHOLD, CDL_RANGE } from "../src/cut/match.js";
 
 const beats = [1, 2, 3].map(i => ({
   index: i, key: `KEY${i}`, description: `beat ${i}`, labels: [`beat ${i}`],
@@ -59,9 +59,19 @@ test("a wild grade is clamped into a range that cannot wreck an image", () => {
   const wild = { slope: [99, -99, 0], offset: [5, 5, 5], power: [0, 0, 0], saturation: 40 };
   const r = reconcile(beats, clips, { assignments: [{ ...ok(1, "c1"), cdl: wild }] });
   const g = r.assignments[0].cdl;
-  assert.deepEqual(g.slope, [2, 0.5, 0.5]);
-  assert.deepEqual(g.offset, [0.2, 0.2, 0.2]);
-  assert.equal(g.saturation, 2);
+  assert.deepEqual(g.slope, [CDL_RANGE.slope[1], CDL_RANGE.slope[0], CDL_RANGE.slope[0]]);
+  assert.deepEqual(g.offset, [CDL_RANGE.offset[1], CDL_RANGE.offset[1], CDL_RANGE.offset[1]]);
+  assert.equal(g.saturation, CDL_RANGE.saturation[1]);
+});
+
+test("the clamp is tight enough that a worst-case grade is still watchable", () => {
+  // The regression behind a visibly red first run: the clamp allowed
+  // four times what the prompt asked for, so it never actually bound
+  // anything. CDL offset lands straight on a 0-1 signal, so a few
+  // hundredths is a real move and 0.2 is a disaster.
+  assert.ok(CDL_RANGE.offset[1] <= 0.05, "offset ceiling must stay small");
+  assert.ok(CDL_RANGE.slope[1] <= 1.3, "slope ceiling must stay near neutral");
+  assert.ok(CDL_RANGE.saturation[0] > 0, "a grade may never fully desaturate the image");
 });
 
 test("a malformed grade falls back to neutral rather than to NaN", () => {

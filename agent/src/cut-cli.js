@@ -10,7 +10,7 @@
 //   node src/cut-cli.js <documentId> [--folder "Sceneflow Footage"]
 //                                    [--list "Shoot List"]
 //                                    [--project Sceneflow]
-//                                    [--dry] [--no-comment]
+//                                    [--dry] [--no-grade] [--no-comment]
 
 import { Repo } from "@automerge/automerge-repo";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
@@ -24,7 +24,7 @@ const flag = (name, fallback) => {
 };
 const has = name => args.includes(`--${name}`);
 // The first bare word that isn't the value of a preceding flag.
-const VALUELESS = new Set(["--dry", "--no-comment"]);
+const VALUELESS = new Set(["--dry", "--no-comment", "--no-grade"]);
 const docArg = (() => {
   for (let i = 0; i < args.length; i++) {
     if (args[i].startsWith("--")) { if (!VALUELESS.has(args[i])) i++; continue; }
@@ -34,7 +34,7 @@ const docArg = (() => {
 })();
 
 if (!docArg) {
-  console.error("usage: node src/cut-cli.js <documentId> [--name 'Board name'] [--folder NAME] [--list NAME] [--project NAME] [--dry] [--no-comment]");
+  console.error("usage: node src/cut-cli.js <documentId> [--name 'Board name'] [--folder NAME] [--list NAME] [--project NAME] [--dry] [--no-grade] [--no-comment]");
   process.exit(1);
 }
 
@@ -61,6 +61,7 @@ const report = await runCut(handle.docSync(), {
   todoistProject: flag("list", DEFAULTS.todoistProject),
   resolveProject: flag("project", DEFAULTS.resolveProject),
   dryRun: has("dry"),
+  grade: !has("no-grade"),
   onLog: m => console.error(`[cut] ${m}`),
 });
 

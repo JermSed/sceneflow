@@ -62,9 +62,19 @@ ambiguous, below 0.4 when you are guessing.
 For every beat, matched or not, also give the look: a short phrase for the \
 intended grade drawn from the sketch and the director's note (time of day, \
 interior/exterior, mood), and an ASC CDL that expresses it — slope, offset and \
-power as [r,g,b] plus saturation. Keep grades restrained and plausible on real \
-footage: slope 0.8-1.2, offset -0.05 to 0.05, power 0.9-1.1, saturation 0.6-1.2. \
-Neutral is slope [1,1,1], offset [0,0,0], power [1,1,1], saturation 1.0.`;
+power as [r,g,b] plus saturation.
+
+The grade is a CORRECTION APPLIED ON TOP OF THE FOOTAGE YOU CAN SEE, not a look \
+painted onto neutral grey. Read the clip's poster frame first and ask what is \
+already there. Footage shot under tungsten is already warm; warming it again \
+makes it orange. Footage already cool does not need cooling. If the clip \
+already looks close to the intent, return neutral — that is the correct \
+answer far more often than not, and an unrequested grade is worse than none.
+
+Stay inside these bounds; values outside them are clamped anyway: \
+slope 0.8-1.2, offset -0.04 to 0.04, power 0.9-1.1, saturation 0.7-1.2. \
+Neutral is slope [1,1,1], offset [0,0,0], power [1,1,1], saturation 1.0. \
+A typical real grade moves one or two channels by a few hundredths.`;
 
 const CUT_TOOL = {
   name: "submit_cut",
@@ -110,23 +120,41 @@ const CUT_TOOL = {
   },
 };
 
-const NEUTRAL_CDL = { slope: [1, 1, 1], offset: [0, 0, 0], power: [1, 1, 1], saturation: 1 };
+export const NEUTRAL_CDL = { slope: [1, 1, 1], offset: [0, 0, 0], power: [1, 1, 1], saturation: 1 };
+
+/** The only grade range this agent will ever apply, shared with the
+ * eval's invariant check so the guardrail and the thing that verifies
+ * the guardrail cannot drift.
+ *
+ * These are deliberately tight. An earlier version allowed slope up
+ * to 2 and offset to ±0.2 — four times what the prompt asks for —
+ * which is not a guardrail, it is a formality: CDL offset is added
+ * straight onto a 0-1 signal, so ±0.2 alone can throw an image
+ * heavily warm. The first real run came out visibly red. A grade
+ * nobody asked for is worse than no grade, so the clamp now matches
+ * the guidance the model is actually given. */
+export const CDL_RANGE = {
+  slope: [0.78, 1.28],
+  offset: [-0.05, 0.05],
+  power: [0.88, 1.14],
+  saturation: [0.55, 1.35],
+};
 
 function clampCDL(cdl) {
   if (!cdl) return NEUTRAL_CDL;
-  const trio = (v, lo, hi, fallback) =>
+  const trio = (v, [lo, hi], fallback) =>
     Array.isArray(v) && v.length === 3 && v.every(n => Number.isFinite(Number(n)))
       ? v.map(n => Math.min(hi, Math.max(lo, Number(n))))
       : fallback;
   return {
-    slope: trio(cdl.slope, 0.5, 2, NEUTRAL_CDL.slope),
-    offset: trio(cdl.offset, -0.2, 0.2, NEUTRAL_CDL.offset),
-    power: trio(cdl.power, 0.5, 2, NEUTRAL_CDL.power),
+    slope: trio(cdl.slope, CDL_RANGE.slope, NEUTRAL_CDL.slope),
+    offset: trio(cdl.offset, CDL_RANGE.offset, NEUTRAL_CDL.offset),
+    power: trio(cdl.power, CDL_RANGE.power, NEUTRAL_CDL.power),
     // `Number(null)` is 0, which is finite — and a saturation of 0
     // silently ships a black-and-white cut. Reject empties first.
     saturation: cdl.saturation == null || cdl.saturation === "" || !Number.isFinite(Number(cdl.saturation))
       ? 1
-      : Math.min(2, Math.max(0, Number(cdl.saturation))),
+      : Math.min(CDL_RANGE.saturation[1], Math.max(CDL_RANGE.saturation[0], Number(cdl.saturation))),
   };
 }
 

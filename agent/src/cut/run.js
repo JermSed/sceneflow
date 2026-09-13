@@ -219,7 +219,13 @@ export async function runCut(doc, options = {}) {
       clipPath: a.clipPath ?? null,
       startSeconds: a.startSeconds ?? null,
       durationSeconds: a.durationSeconds ?? null,
-      look: a.look, cdl: a.cdl,
+      look: a.look,
+      // `grade: false` lays the cut down ungraded. Worth having as a
+      // switch rather than a code change: the assembly is the part
+      // you cannot do by hand in a minute, and on someone else's
+      // footage a grade is a matter of taste that should never be
+      // the reason the useful half is unusable.
+      cdl: opts.grade === false ? null : a.cdl,
     })),
   };
   report.resolve = await stage(report, "resolve.timeline", () =>
