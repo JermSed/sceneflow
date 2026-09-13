@@ -87,8 +87,13 @@ def ensure_project(resolve, name):
     """
     manager = resolve.GetProjectManager()
 
+    # Match case-insensitively. A human typing the project name into
+    # Resolve's New Project box will not reproduce our capitalization,
+    # and creating a near-duplicate project because of one letter is a
+    # confusing way to fail.
     current = manager.GetCurrentProject()
-    if current is not None and current.GetName() == name:
+    if current is not None and current.GetName().lower() == name.lower():
+        log(f"already in project {current.GetName()!r}")
         return current
 
     # Unsaved changes in the open project block every switch below.
@@ -98,12 +103,13 @@ def ensure_project(resolve, name):
     manager.GotoRootFolder()
 
     existing = manager.GetProjectListInCurrentFolder() or []
-    if name in existing:
-        opened = manager.LoadProject(name)
+    match = next((p for p in existing if p.lower() == name.lower()), None)
+    if match:
+        opened = manager.LoadProject(match)
         if opened:
-            log(f"opened existing project {name!r}")
+            log(f"opened existing project {opened.GetName()!r}")
             return opened
-        log(f"project {name!r} exists but would not load; trying a fresh name")
+        log(f"project {match!r} exists but would not load; trying a fresh name")
     else:
         opened = manager.LoadProject(name)
         if opened:
@@ -125,14 +131,24 @@ def ensure_project(resolve, name):
         log(f"could not use {name!r}; created {fallback!r} instead")
         return created
 
-    if current is not None:
-        log(f"could not create a project; building in the open project {current.GetName()!r}")
+    # Falling back to whatever is open is only sane if that project is
+    # real. Resolve's scratch "Untitled Project" is not saved to the
+    # project library, and the API cannot create timelines inside it —
+    # so continuing there would just move the failure one step later
+    # and report it as a timeline problem, which is exactly the wrong
+    # place to look. Fail here, with the fix.
+    current_name = current.GetName() if current is not None else None
+    if current_name and current_name.lower() != "untitled project":
+        log(f"could not create a project; building in the open project {current_name!r}")
         return current
 
     raise RuntimeError(
-        f"Could not create or open a Resolve project named {name!r}, and no project is open. "
-        f"Projects in the root folder: {existing or 'none'}. "
-        f"Open any project in Resolve and try again."
+        f"Resolve would not create a project named {name!r}, and the only thing open is "
+        f"{current_name or 'nothing'}. Resolve cannot create timelines in the unsaved "
+        f"'Untitled Project', so the run would fail later anyway.\n"
+        f"Fix: in Resolve, go to the Project Manager (the house icon, top right), create a "
+        f"project called {name!r}, open it, and press Cmd-S. Then run this again.\n"
+        f"Projects currently in the root folder: {existing or 'none'}."
     )
 
 
@@ -173,8 +189,35 @@ def import_media(project, paths):
     return existing, [p for p in resolved if p not in existing]
 
 
-def ensure_timeline(project, name, rebuild):
+def timeline_names(project):
+    names = []
+    for i in range(1, (project.GetTimelineCount() or 0) + 1):
+        timeline = project.GetTimelineByIndex(i)
+        if timeline:
+            names.append(timeline.GetName())
+    return names
+
+
+def ensure_timeline(resolve, project, name, rebuild):
+    """Find or create the timeline, working around two Resolve quirks.
+
+    `CreateEmptyTimeline` returns None — never an exception, never a
+    reason — in at least three situations that have nothing to do with
+    each other:
+
+      * the media pool has no CURRENT FOLDER set, which is the state a
+        freshly created or freshly loaded project is in until
+        something selects one;
+      * the Edit page has never been opened in this session, so the
+        timeline subsystem is not initialized;
+      * a timeline of that name already exists.
+
+    We handle all three rather than guess which one is happening, and
+    if it still fails the error carries the state a human would need
+    to diagnose it instead of just repeating the name.
+    """
     pool = project.GetMediaPool()
+
     for i in range(1, (project.GetTimelineCount() or 0) + 1):
         timeline = project.GetTimelineByIndex(i)
         if timeline and timeline.GetName() == name:
@@ -189,11 +232,37 @@ def ensure_timeline(project, name, rebuild):
                 timeline.DeleteClips(items)
             log(f"cleared timeline {name!r} for rebuild")
             return timeline, False
+
+    # Quirk 1: give the media pool a current folder.
+    root = pool.GetRootFolder()
+    if root:
+        pool.SetCurrentFolder(root)
+    # Quirk 2: wake the timeline subsystem before asking it for one.
+    resolve.OpenPage("edit")
+
     timeline = pool.CreateEmptyTimeline(name)
-    if not timeline:
-        raise RuntimeError(f"Could not create timeline {name!r}")
-    log(f"created timeline {name!r}")
-    return timeline, True
+    if timeline:
+        log(f"created timeline {name!r}")
+        return timeline, True
+
+    # Quirk 3, or something we have not seen: take a unique name
+    # rather than fail a run that has already done real work.
+    from datetime import datetime
+    fallback = f"{name} {datetime.now():%H%M%S}"
+    timeline = pool.CreateEmptyTimeline(fallback)
+    if timeline:
+        log(f"could not create {name!r}; created {fallback!r} instead")
+        return timeline, True
+
+    raise RuntimeError(
+        f"Could not create timeline {name!r} (or {fallback!r}). "
+        f"Resolve {resolve.GetVersionString()}; "
+        f"project {project.GetName()!r}; "
+        f"existing timelines: {timeline_names(project) or 'none'}; "
+        f"media pool root folder: {'present' if root else 'MISSING'}. "
+        f"If the root folder is missing, the project did not finish loading — "
+        f"open it by hand in Resolve and run again."
+    )
 
 
 def build(plan):
@@ -205,9 +274,8 @@ def build(plan):
     wanted = [b["clipPath"] for b in beats if b.get("clipPath")]
     pool_index, unreadable = import_media(project, wanted)
 
-    timeline, _ = ensure_timeline(project, plan["timelineName"], plan.get("rebuild", True))
+    timeline, _ = ensure_timeline(resolve, project, plan["timelineName"], plan.get("rebuild", True))
     project.SetCurrentTimeline(timeline)
-    resolve.OpenPage("edit")
 
     placed, skipped = [], []
     for beat in beats:

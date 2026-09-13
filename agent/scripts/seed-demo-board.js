@@ -17,7 +17,7 @@
 import { Repo } from "@automerge/automerge-repo";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 import { next as A } from "@automerge/automerge";
-import { randomUUID } from "node:crypto";
+import { sketch, toDocStrokes, uuid, f64 } from "./sketch-shapes.js";
 
 const args = process.argv.slice(2);
 const flag = (n, d) => { const i = args.indexOf(`--${n}`); return i === -1 ? d : args[i + 1]; };
@@ -35,28 +35,6 @@ const shots = (flag("shots", "") || "").trim()
   ? flag("shots").split(",").map(s => s.trim()).filter(Boolean)
   : DEFAULT_SHOTS;
 
-const uuid = () => new A.RawString(randomUUID().toUpperCase());
-const f64 = n => new A.Float64(n);
-
-/** A few strokes that read as a rough boxed composition, varied per
- * frame so the renders aren't identical and the matcher has
- * something to look at. */
-function sketch(seed) {
-  const jitter = (n, k) => n + ((seed * 37 + k * 53) % 60) - 30;
-  const stroke = points => ({
-    id: uuid(), color: 0x1a1a1aff, width: 4,
-    points: points.map(([x, y]) => ({ x: f64(x), y: f64(y), pressure: f64(0.7) })),
-  });
-  return [
-    // horizon / frame line
-    stroke([[60, jitter(360, 1)], [740, jitter(360, 2)]]),
-    // subject
-    stroke([[jitter(320, 3), 210], [jitter(360, 4), 330], [jitter(300, 5), 470]]),
-    stroke([[jitter(300, 6), 250], [jitter(420, 7), 250]]),
-    // foreground element
-    stroke([[100, 520], [190, 430], [270, 520], [100, 520]]),
-  ];
-}
 
 const repo = new Repo({
   network: [new BrowserWebSocketClientAdapter(relayUrl)],
@@ -86,7 +64,7 @@ handle.change(d => {
     d.snapshots.push({
       id, x: f64(x), y: f64(y), z: i,
       width: f64(800), height: f64(600),
-      strokes: sketch(i + 1),
+      strokes: toDocStrokes(sketch(shot, i + 1)),
     });
     // The slug line, tucked just under the frame so beats.js picks
     // it up as that frame's description.
