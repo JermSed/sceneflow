@@ -20,6 +20,8 @@ struct BoardOpenView: View {
     let boardId: UUID
 
     @EnvironmentObject private var library: BoardLibrary
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var store: BoardStore?
     @State private var loadError: String?
     @State private var showShareSheet = false
@@ -96,18 +98,15 @@ struct BoardOpenView: View {
                         isPlacingConnector: $isPlacingConnector,
                         dismissEditingPulse: $dismissEditingPulse)
 
-                    // Slim banner that drops down from the top of
-                    // the board when the sync socket isn't ready.
-                    // Local edits keep working (Automerge is
-                    // offline-first) — the banner just tells the
-                    // user that "what they draw will sync once the
-                    // relay is reachable again."
+                }
+                .safeAreaInset(edge: .top, spacing: 0) {
                     if shouldShowOfflineBanner {
                         OfflineBanner()
-                            .transition(.move(edge: .top).combined(with: .opacity))
+                            .padding(.bottom, 10)
+                            .transition(.opacity)
                     }
                 }
-                .animation(.easeInOut(duration: 0.25), value: shouldShowOfflineBanner)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: shouldShowOfflineBanner)
                 .toolbar { toolbar(for: store, summary: summary) }
                 .sheet(isPresented: $showShareSheet) {
                     ShareBoardSheet(summary: summary)
@@ -118,10 +117,13 @@ struct BoardOpenView: View {
             } else if let loadError {
                 loadErrorView(loadError)
             } else {
-                ProgressView()
+                ProgressView("Opening board…")
             }
         }
         .navigationTitle(boardName)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
         .task { await loadStore() }
     }
 
@@ -176,14 +178,9 @@ struct BoardOpenView: View {
     private func deleteThisBoard() {
         do {
             try library.deleteBoard(id: boardId)
-            // Pop back to the list. The NavigationStack path lives
-            // on flowApp; clearing the destination by setting our
-            // own boardName change is awkward, so we lean on the
-            // OS's standard back-on-disappear behavior here — the
-            // user is already mid-error so the auto-pop is what
-            // they expect.
+            dismiss()
         } catch {
-            assertionFailure("deleteBoard failed: \(error)")
+            loadError = error.localizedDescription
         }
     }
 
@@ -224,6 +221,7 @@ struct BoardOpenView: View {
                 .keyboardShortcut("z", modifiers: [.command, .shift])
                 .disabled(!store.canRedo)
                 .accessibilityLabel("Redo")
+                .help("Redo")
             }
         }
 
@@ -260,109 +258,51 @@ struct BoardOpenView: View {
         }
 
         ToolbarItem(placement: .primaryAction) {
-            Button {
-                showIdentitySheet = true
-            } label: {
-                Image(systemName: "person.crop.circle")
-                    .foregroundStyle(library.presence.localColor)
-            }
-            .accessibilityLabel("Your name")
-        }
-
-        // Two contextual buttons. The sketch is hidden by default;
-        // "+" reveals it; once visible, Capture freezes it back
-        // into a snapshot and hides it again. We keep both visible
-        // so the user can see where each lives, and gate them on
-        // sketch state for affordance.
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                sketchOpenedLocally = true
-            } label: {
-                // A plain "+" reads as "new thing" everywhere on
-                // iOS. The earlier square.and.pencil icon was
-                // too subtle and got mistaken for a generic edit
-                // glyph.
-                Label("New sketch", systemImage: "plus")
-                    .labelStyle(.iconOnly)
-                    .font(.system(size: 18, weight: .semibold))
+            Button { sketchOpenedLocally = true } label: {
+                Label("New sketch", systemImage: "square.and.pencil")
             }
             .disabled(isSketchVisible(store: store))
+            .help("New sketch")
         }
-
         ToolbarItem(placement: .primaryAction) {
-            Button {
-                // Hand off to FieldView, which knows the current
-                // viewport center and places the snapshot there.
-                captureRequest = true
-            } label: {
-                Label("Capture", systemImage: "camera")
+            Button { captureRequest = true } label: {
+                Label("Keep sketch", systemImage: "checkmark.square")
             }
-            // Capturing an empty sketch would create a blank
-            // snapshot. Only enable when there's something to freeze.
             .disabled(store.canvas.activeSketch.strokes.isEmpty)
+            .help("Keep this sketch as a movable frame")
         }
-
-        // Placement tools + paste + share grouped into one
-        // toolbar item to stay under SwiftUI's
-        // ToolbarContentBuilder ~10-item limit.
         ToolbarItem(placement: .primaryAction) {
-            HStack(spacing: 6) {
+            Menu {
                 Button {
-                    if isPlacingComment { isPlacingComment = false }
-                    if isPlacingConnector { isPlacingConnector = false }
-                    isPlacingText.toggle()
-                } label: {
-                    Image(systemName: "textformat")
-                        .foregroundStyle(isPlacingText ? Color.white : Color.primary)
-                        .padding(.horizontal, 6).padding(.vertical, 3)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(isPlacingText ? Color.accentColor : Color.clear))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isPlacingText ? "Cancel placing text" : "Place text")
-
+                    isPlacingText = true
+                    isPlacingComment = false
+                    isPlacingConnector = false
+                } label: { Label("Add text", systemImage: "textformat") }
                 Button {
-                    if isPlacingText { isPlacingText = false }
-                    if isPlacingConnector { isPlacingConnector = false }
-                    isPlacingComment.toggle()
-                } label: {
-                    Image(systemName: "text.bubble")
-                        .foregroundStyle(isPlacingComment ? Color.white : Color.primary)
-                        .padding(.horizontal, 6).padding(.vertical, 3)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(isPlacingComment ? Color.accentColor : Color.clear))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isPlacingComment ? "Cancel placing comment" : "Place comment")
-
+                    isPlacingComment = true
+                    isPlacingText = false
+                    isPlacingConnector = false
+                } label: { Label("Add comment", systemImage: "text.bubble") }
                 Button {
-                    if isPlacingText { isPlacingText = false }
-                    if isPlacingComment { isPlacingComment = false }
-                    isPlacingConnector.toggle()
-                } label: {
-                    Image(systemName: "arrow.right")
-                        .foregroundStyle(isPlacingConnector ? Color.white : Color.primary)
-                        .padding(.horizontal, 6).padding(.vertical, 3)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(isPlacingConnector ? Color.accentColor : Color.clear))
+                    isPlacingConnector = true
+                    isPlacingText = false
+                    isPlacingComment = false
+                } label: { Label("Connect frames", systemImage: "arrow.right") }
+                .disabled(store.canvas.snapshots.count < 2)
+                Button(action: pasteFromClipboard) { Label("Paste", systemImage: "doc.on.clipboard") }
+                    .keyboardShortcut("v", modifiers: .command)
+                Divider()
+                Button { showIdentitySheet = true } label: {
+                    Label("Your name", systemImage: "person.crop.circle")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isPlacingConnector ? "Cancel connecting" : "Connect snapshots")
-
-                Button { pasteFromClipboard() } label: {
-                    Image(systemName: "doc.on.clipboard")
-                }
-                .keyboardShortcut("v", modifiers: .command)
-                .accessibilityLabel("Paste")
-
-                Button { showShareSheet = true } label: {
-                    Image(systemName: "square.and.arrow.up")
-                }
-                .accessibilityLabel("Share")
+            } label: { Label("Add to board", systemImage: "plus.circle") }
+            .help("Add to board")
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button { showShareSheet = true } label: {
+                Label("Share", systemImage: "square.and.arrow.up")
             }
+            .help("Share board")
         }
     }
 

@@ -97,6 +97,7 @@ struct CommentPopover: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
+            .accessibilityLabel("Delete comment")
 
             Button {
                 onResolve()
@@ -113,7 +114,7 @@ struct CommentPopover: View {
 
             Button("Save") { commit() }
                 .buttonStyle(.borderedProminent)
-                .disabled(draft == comment.text)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft == comment.text)
         }
         .font(.system(size: 12))
     }

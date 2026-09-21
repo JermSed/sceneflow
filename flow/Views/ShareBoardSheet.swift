@@ -95,6 +95,9 @@ struct ShareBoardSheet: View {
                 .interpolation(.none)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
+                .padding(16)
+                .background(.white, in: RoundedRectangle(cornerRadius: 16))
+                .accessibilityLabel("Board invitation QR code")
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
                         .stroke(Color.secondary.opacity(0.2), lineWidth: 1))

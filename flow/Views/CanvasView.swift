@@ -107,23 +107,9 @@ struct CanvasView: View {
 
     var body: some View {
         ZStack {
-            // 1. Committed strokes layer. Wrapped in `.drawingGroup()`
-            //    so SwiftUI rasterizes it once into a Metal-backed
-            //    bitmap and only re-rasterizes when the committed
-            //    stroke list actually changes (a new commit or an
-            //    erase). The live drawing path no longer drags the
-            //    full stroke list through Canvas on every pen
-            //    sample — that's what made dense sketches stutter.
-            Canvas { ctx, _ in
-                for stroke in committedStrokes {
-                    guard !stroke.points.isEmpty else { continue }
-                    ctx.stroke(
-                        Self.path(for: stroke.points),
-                        with: .color(Color(rgba: stroke.color)),
-                        style: Self.strokeStyle(width: stroke.width))
-                }
-            }
-            .drawingGroup(opaque: false)
+            // Keep stable strokes out of the live sample update path.
+            CommittedStrokeLayer(strokes: committedStrokes)
+                .equatable()
 
             // 2. Live overlay — just the in-progress stroke. Tiny
             //    by construction (one stroke's worth of points),
@@ -225,6 +211,7 @@ struct CanvasView: View {
             case .began, .changed:
                 handleDragChange(at: sample.location, pressure: sample.pressure)
             case .ended:
+                handleDragChange(at: sample.location, pressure: sample.pressure)
                 commitInProgressStroke()
             }
         case .eraser:
@@ -266,6 +253,11 @@ struct CanvasView: View {
     }
 
     private func handleDragChange(at location: CGPoint, pressure: Double = 0.5) {
+        // A new gesture can arrive before the previous document notification.
+        if pendingStrokeId != nil {
+            inProgressPoints = []
+            pendingStrokeId = nil
+        }
         let point = Point(
             x: Double(location.x),
             y: Double(location.y),
@@ -344,7 +336,7 @@ struct CanvasView: View {
     ///
     /// Cheap, no extra deps. Degenerate cases (1 / 2 points) draw
     /// a dot / line so a tap or short flick still leaves a mark.
-    private static func path(for points: [Point]) -> Path {
+    fileprivate static func path(for points: [Point]) -> Path {
         var path = Path()
         guard let first = points.first else { return path }
         let p0 = CGPoint(x: first.x, y: first.y)
@@ -382,8 +374,25 @@ struct CanvasView: View {
         CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
     }
 
-    private static func strokeStyle(width: Double) -> StrokeStyle {
+    fileprivate static func strokeStyle(width: Double) -> StrokeStyle {
         StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
+    }
+}
+
+private struct CommittedStrokeLayer: View, Equatable {
+    let strokes: [Stroke]
+
+    var body: some View {
+        Canvas { context, _ in
+            for stroke in strokes where !stroke.points.isEmpty {
+                context.stroke(
+                    CanvasView.path(for: stroke.points),
+                    with: .color(Color(rgba: stroke.color)),
+                    style: CanvasView.strokeStyle(width: stroke.width))
+            }
+        }
+        .drawingGroup(opaque: false)
+        .allowsHitTesting(false)
     }
 }
 

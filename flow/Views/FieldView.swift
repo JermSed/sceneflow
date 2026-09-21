@@ -34,6 +34,9 @@ import AppKit
 
 struct FieldView: View {
 
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     @ObservedObject var store: BoardStore
 
     /// Sync identity for the board this view is showing. Passed
@@ -141,6 +144,15 @@ struct FieldView: View {
     @State private var pendingScale: CGFloat = 1.0
     @State private var draggingSnapshot: (id: UUID, translation: CGSize)?
     @State private var didCenter = false
+    @State private var isPanning = false
+    @State private var interactionError: String?
+    @FocusState private var textFocused: Bool
+    @GestureState private var resizePreview: ResizePreview?
+
+    private struct ResizePreview {
+        let id: UUID
+        let rect: CGRect
+    }
 
     /// Pan value captured at the start of a pinch so we can
     /// derive the in-flight pan correction without it sliding
@@ -189,7 +201,7 @@ struct FieldView: View {
                 //    `.contextMenu` with the Figma-style "drop
                 //    something here" shortcuts. A single tap
                 //    here also clears any current selection.
-                Color(red: 0.91, green: 0.91, blue: 0.93)
+                (colorScheme == .dark ? Color(white: 0.12) : Color(red: 0.96, green: 0.96, blue: 0.97))
                     .contentShape(Rectangle())
                     .onTapGesture {
                         // Tapping the empty field deselects AND
@@ -229,9 +241,33 @@ struct FieldView: View {
                 content(in: geo.size)
                     .scaleEffect(currentScale, anchor: .topLeading)
                     .offset(currentPan)
-                    .allowsHitTesting(true)
+                    .allowsHitTesting(!isPanning)
             }
             .clipped()
+            .overlay {
+                if !hasEditableSurface && store.canvas.snapshots.isEmpty &&
+                    store.canvas.texts.isEmpty && store.canvas.images.isEmpty &&
+                    store.canvas.comments.isEmpty && !isPlacingText &&
+                    !isPlacingComment && !isPlacingConnector {
+                    VStack(spacing: 14) {
+                        Image(systemName: "pencil.and.outline")
+                            .font(.system(size: 36, weight: .light))
+                            .foregroundStyle(.secondary)
+                        Text("Make room for an idea")
+                            .font(.title2.weight(.semibold))
+                        Text("Start a sketch, or add text and images to your board.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Button { sketchOpenedLocally = true } label: {
+                            Label("Start sketching", systemImage: "square.and.pencil")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                    }
+                    .padding(28)
+                }
+            }
             .simultaneousGesture(magnifyGesture)
             .overlay {
                 // Figma-style text placement. While armed we
@@ -273,19 +309,58 @@ struct FieldView: View {
         // bottom edge — that's where the previous .overlay version
         // disappeared on iPad.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            // The drawing tool pill only makes sense when there's
-            // SOME drawing surface to act on — either the active
-            // sketch is visible, or the user is editing a snapshot.
-            // Hide it when the field is read-only-arranging.
-            if hasEditableSurface {
-                ToolbarPill(tool: $tool, color: $color, width: $width)
-                    .padding(.bottom, 12)
-                    .padding(.top, 8)
-                    .frame(maxWidth: .infinity)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            VStack(spacing: 8) {
+                if editingSnapshotId != nil || editingTextId != nil {
+                    Button("Done editing") { dismissAllEditing() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                } else if let selection, !isPanning {
+                    selectionControls(selection)
+                }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        if hasEditableSurface && !isPanning && editingTextId == nil && (selection == nil || editingSnapshotId != nil) {
+                            ToolbarPill(tool: $tool, color: $color, width: $width)
+                        }
+                        navigationControls
+                    }
+                    VStack(spacing: 8) {
+                        if hasEditableSurface && !isPanning && editingTextId == nil && (selection == nil || editingSnapshotId != nil) {
+                            ToolbarPill(tool: $tool, color: $color, width: $width)
+                        }
+                        navigationControls
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
+        }
+        .alert("Couldn’t update board", isPresented: Binding(
+            get: { interactionError != nil },
+            set: { if !$0 { interactionError = nil } })) {
+                Button("OK") { interactionError = nil }
+            } message: { Text(interactionError ?? "") }
+        .overlay(alignment: .top) {
+            if isPlacingText || isPlacingComment || isPlacingConnector {
+                HStack(spacing: 12) {
+                    Text(isPlacingText ? "Tap anywhere to add text" :
+                         isPlacingComment ? "Tap anywhere to comment" : (connectorFirstId == nil ? "Select the first frame" : "Select another frame to connect"))
+                        .font(.callout)
+                    Button("Cancel") {
+                        isPlacingText = false
+                        isPlacingComment = false
+                        isPlacingConnector = false
+                        connectorFirstId = nil
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(12)
+                .floatingGlass()
+                .padding()
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: hasEditableSurface)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: hasEditableSurface)
         // If a snapshot the user was editing gets removed by a
         // peer (delete-snapshot, future feature), drop the
         // editing-id so the tool pill doesn't linger pointing at
@@ -315,6 +390,9 @@ struct FieldView: View {
         // place the moment it flips on.
         .onChange(of: sketchOpenedLocally) { old, new in
             if !old, new {
+                isPanning = false
+                dismissAllEditing()
+                selection = nil
                 sketchPosition = topLeftCenteredOnViewport()
             }
         }
@@ -344,6 +422,141 @@ struct FieldView: View {
         // Parent's ESC fires this — drop any in-place editing.
         .onChange(of: dismissEditingPulse) { _, _ in
             dismissAllEditing()
+            isPanning = false
+        }
+        .onChange(of: isPlacingText) { _, active in if active { isPanning = false; dismissAllEditing() } }
+        .onChange(of: isPlacingComment) { _, active in if active { isPanning = false; dismissAllEditing() } }
+        .onChange(of: isPlacingConnector) { _, active in if active { isPanning = false; dismissAllEditing() } }
+    }
+
+    private var navigationControls: some View {
+        HStack(spacing: 2) {
+            Button {
+                isPanning.toggle()
+                if isPanning {
+                    dismissAllEditing()
+                    selection = nil
+                    isPlacingText = false
+                    isPlacingComment = false
+                    isPlacingConnector = false
+                }
+            } label: {
+                Image(systemName: isPanning ? "hand.draw.fill" : "hand.draw")
+                    .frame(width: 44, height: 44)
+                    .foregroundStyle(isPanning ? Color.accentColor : .primary)
+            }
+            .accessibilityLabel("Pan canvas")
+            .accessibilityAddTraits(isPanning ? .isSelected : [])
+            .help("Pan canvas: drag anywhere to move your view")
+            Divider().frame(height: 22)
+            Button { zoom(by: 1 / 1.25) } label: {
+                Image(systemName: "minus.magnifyingglass").frame(width: 44, height: 44)
+            }
+            .disabled(scale <= 0.05)
+            .accessibilityLabel("Zoom out")
+            Menu {
+                Button("Fit all content", action: fitContent)
+                Button("Actual size") { zoom(by: 1 / scale) }
+            } label: {
+                Text("\(Int(currentScale * 100))%")
+                    .font(.callout.monospacedDigit())
+                    .frame(minWidth: 50, minHeight: 44)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityLabel("Zoom")
+            Button { zoom(by: 1.25) } label: {
+                Image(systemName: "plus.magnifyingglass").frame(width: 44, height: 44)
+            }
+            .disabled(scale >= 4)
+            .accessibilityLabel("Zoom in")
+            Button(action: fitContent) {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel("Fit all content")
+            .help("Fit all content")
+        }
+        .buttonStyle(.plain)
+        .padding(6)
+        .floatingGlass()
+    }
+
+    private func selectionControls(_ selected: FieldSelection) -> some View {
+        HStack(spacing: 12) {
+            switch selected {
+            case .snapshot(let id):
+                Button {
+                    dismissAllEditing()
+                    editingSnapshotId = id
+                } label: { Label("Edit drawing", systemImage: "pencil") }
+            case .text(let id):
+                Button {
+                    if let note = store.canvas.texts.first(where: { $0.id == id }) { beginTextEdit(note) }
+                } label: { Label("Edit text", systemImage: "text.cursor") }
+            case .image:
+                Text("Drag to move · Drag a corner to resize").foregroundStyle(.secondary)
+            }
+            Button(role: .destructive) {
+                do {
+                    switch selected {
+                    case .snapshot(let id): try store.removeSelectedSnapshot(id: id)
+                    case .text(let id): try store.removeText(id: id)
+                    case .image(let id): try store.removeImage(id: id)
+                    }
+                    selection = nil
+                } catch { interactionError = error.localizedDescription }
+            } label: { Label("Delete", systemImage: "trash") }
+        }
+        .font(.callout)
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 16)
+        .frame(minHeight: 44)
+        .floatingGlass()
+    }
+
+    private func displayRect(_ snapshot: Snapshot) -> CGRect {
+        if let preview = resizePreview, preview.id == snapshot.id { return preview.rect }
+        return CGRect(x: snapshot.x, y: snapshot.y, width: snapshot.width, height: snapshot.height)
+    }
+
+    private func displayRect(_ image: ImageNote) -> CGRect {
+        if let preview = resizePreview, preview.id == image.id { return preview.rect }
+        return CGRect(x: image.x, y: image.y, width: image.width, height: image.height)
+    }
+
+    private func zoom(by factor: CGFloat) {
+        let newScale = clampScale(scale * factor)
+        let effective = newScale / scale
+        let center = viewportCenterLocal
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+            pan = CGSize(width: center.x - (center.x - pan.width) * effective,
+                         height: center.y - (center.y - pan.height) * effective)
+            scale = newScale
+        }
+    }
+
+    private func fitContent() {
+        var bounds = CGRect.null
+        if isSketchVisible {
+            bounds = CGRect(origin: sketchPosition, size: Self.sketchSize)
+        }
+        for snapshot in store.canvas.snapshots { bounds = bounds.union(displayRect(snapshot)) }
+        for image in store.canvas.images { bounds = bounds.union(displayRect(image)) }
+        for note in store.canvas.texts {
+            // Text does not store a measured size; allow space for a short note.
+            bounds = bounds.union(CGRect(x: note.x, y: note.y, width: 320, height: max(80, note.fontSize * 3)))
+        }
+        for comment in store.canvas.comments {
+            bounds = bounds.union(CGRect(x: comment.x - 14, y: comment.y - 14, width: 28, height: 28))
+        }
+        if bounds.isNull { bounds = CGRect(origin: .zero, size: Self.sketchSize) }
+        let fittedScale = max(0.05, min(1, min((containerSize.width - 64) / bounds.width,
+                                                (containerSize.height - 64) / bounds.height)))
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
+            scale = fittedScale
+            pan = CGSize(width: containerSize.width / 2 - bounds.midX * scale,
+                         height: containerSize.height / 2 - bounds.midY * scale)
         }
     }
 
@@ -369,10 +582,11 @@ struct FieldView: View {
 
         let z = store.canvas.snapshots.count
         do {
-            _ = try store.captureSnapshot(
+            let captured = try store.captureSnapshot(
                 at: Double(sketchPosition.x),
                 y: Double(sketchPosition.y),
                 z: z)
+            selection = .snapshot(captured)
             // Capture cleared the active sketch; close the local
             // reveal so the field returns to "snapshots only".
             sketchOpenedLocally = false
@@ -412,7 +626,7 @@ struct FieldView: View {
     /// (i.e., a peer just started drawing) flips
     /// `sketchOpenedLocally` so the user sees the collab arrive.
     private var isSketchVisible: Bool {
-        sketchOpenedLocally
+        sketchOpenedLocally || !store.canvas.activeSketch.strokes.isEmpty
     }
 
     /// Either the sketch is open OR a snapshot is being edited
@@ -470,8 +684,8 @@ struct FieldView: View {
             ForEach(Array(store.canvas.snapshots.enumerated()), id: \.element.id) { idx, snap in
                 snapshotFrame(index: idx, snapshot: snap)
                     .offset(
-                        x: snap.x + draggingOffset(for: snap.id).width,
-                        y: snap.y + draggingOffset(for: snap.id).height)
+                        x: displayRect(snap).minX + draggingOffset(for: snap.id).width,
+                        y: displayRect(snap).minY + draggingOffset(for: snap.id).height)
             }
 
             // Image notes. Rendered before text so text can sit
@@ -479,8 +693,8 @@ struct FieldView: View {
             ForEach(store.canvas.images) { image in
                 imageNoteView(image)
                     .offset(
-                        x: image.x + draggingOffset(for: image.id).width,
-                        y: image.y + draggingOffset(for: image.id).height)
+                        x: displayRect(image).minX + draggingOffset(for: image.id).width,
+                        y: displayRect(image).minY + draggingOffset(for: image.id).height)
             }
 
             // Text notes — top of the z-stack so they're never
@@ -560,6 +774,7 @@ struct FieldView: View {
                 tool: tool,
                 color: color,
                 width: width)
+                .simultaneousGesture(TapGesture().onEnded { selection = nil })
             // Peers' in-progress strokes are drawn inside the
             // active sketch frame because they're in sketch-local
             // coordinates. Each is colored with the peer's
@@ -594,8 +809,8 @@ struct FieldView: View {
     @ViewBuilder
     private func snapshotFrame(index: Int, snapshot: Snapshot) -> some View {
         let isEditing = editingSnapshotId == snapshot.id
-        let isSelected = selection == .snapshot(snapshot.id)
-        let title = "Snapshot \(index + 1)"
+        let isSelected = selection == .snapshot(snapshot.id) || connectorFirstId == snapshot.id
+        let title = "Frame \(index + 1)"
         ZStack(alignment: .topLeading) {
             HStack(spacing: 8) {
                 Text(title)
@@ -618,8 +833,8 @@ struct FieldView: View {
             .offset(y: -Self.titleHeight)
 
             snapshotBody(snapshot: snapshot, isEditing: isEditing)
-                .frame(width: CGFloat(snapshot.width),
-                       height: CGFloat(snapshot.height))
+                .frame(width: displayRect(snapshot).width,
+                       height: displayRect(snapshot).height)
                 .background(Color.white)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .overlay(
@@ -650,6 +865,8 @@ struct FieldView: View {
         // endpoint instead.
         .onTapGesture(count: 2) {
             if !isEditing && !isPlacingConnector {
+                dismissAllEditing()
+                selection = .snapshot(snapshot.id)
                 editingSnapshotId = snapshot.id
             }
         }
@@ -662,7 +879,7 @@ struct FieldView: View {
         }
         // Move-by-drag only in view mode. In edit mode the drag
         // belongs to the drawing surface inside the tile.
-        .gesture(isEditing ? nil : dragGesture(for: snapshot))
+        .gesture(isEditing || isPlacingConnector ? nil : dragGesture(for: snapshot))
     }
 
     /// Border color for a snapshot frame, picking up selection
@@ -686,14 +903,17 @@ struct FieldView: View {
         ZStack(alignment: .topLeading) {
             ForEach(ResizeCorner.allCases, id: \.self) { corner in
                 ResizeHandle()
+                    .scaleEffect(1 / currentScale)
+                    .frame(width: 36 / currentScale, height: 36 / currentScale)
+                    .contentShape(Rectangle())
                     .position(handlePosition(
                         corner: corner,
-                        size: CGSize(width: snapshot.width, height: snapshot.height)))
+                        size: displayRect(snapshot).size))
                     .gesture(resizeGesture(corner: corner, snapshot: snapshot))
             }
         }
-        .frame(width: CGFloat(snapshot.width),
-               height: CGFloat(snapshot.height),
+        .frame(width: displayRect(snapshot).width,
+               height: displayRect(snapshot).height,
                alignment: .topLeading)
         .allowsHitTesting(true)
     }
@@ -709,14 +929,14 @@ struct FieldView: View {
 
     private func resizeGesture(corner: ResizeCorner, snapshot: Snapshot) -> some Gesture {
         DragGesture(coordinateSpace: .global)
-            .onChanged { value in
-                // Live update via the existing draggingSnapshot
-                // hook isn't quite right for resize (it offsets
-                // the whole tile). For an MVP, just compute the
-                // commit value on end. Visual feedback during
-                // drag would require a separate per-corner
-                // overlay state — defer until users complain.
-                _ = value
+            .updating($resizePreview) { value, preview, _ in
+                let rect = resizedRect(corner: corner,
+                    originalX: snapshot.x, originalY: snapshot.y,
+                    originalWidth: snapshot.width, originalHeight: snapshot.height,
+                    dx: value.translation.width / currentScale,
+                    dy: value.translation.height / currentScale)
+                preview = ResizePreview(id: snapshot.id,
+                    rect: CGRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height))
             }
             .onEnded { value in
                 let dx = value.translation.width / currentScale
@@ -742,19 +962,31 @@ struct FieldView: View {
         ZStack(alignment: .topLeading) {
             ForEach(ResizeCorner.allCases, id: \.self) { corner in
                 ResizeHandle()
+                    .scaleEffect(1 / currentScale)
+                    .frame(width: 36 / currentScale, height: 36 / currentScale)
+                    .contentShape(Rectangle())
                     .position(handlePosition(
                         corner: corner,
-                        size: CGSize(width: image.width, height: image.height)))
+                        size: displayRect(image).size))
                     .gesture(resizeGesture(corner: corner, image: image))
             }
         }
-        .frame(width: CGFloat(image.width),
-               height: CGFloat(image.height),
+        .frame(width: displayRect(image).width,
+               height: displayRect(image).height,
                alignment: .topLeading)
     }
 
     private func resizeGesture(corner: ResizeCorner, image: ImageNote) -> some Gesture {
         DragGesture(coordinateSpace: .global)
+            .updating($resizePreview) { value, preview, _ in
+                let rect = resizedRect(corner: corner,
+                    originalX: image.x, originalY: image.y,
+                    originalWidth: image.width, originalHeight: image.height,
+                    dx: value.translation.width / currentScale,
+                    dy: value.translation.height / currentScale)
+                preview = ResizePreview(id: image.id,
+                    rect: CGRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height))
+            }
             .onEnded { value in
                 let dx = value.translation.width / currentScale
                 let dy = value.translation.height / currentScale
@@ -859,6 +1091,7 @@ struct FieldView: View {
                                 RoundedRectangle(cornerRadius: 4)
                                     .stroke(Color.accentColor.opacity(0.6),
                                             lineWidth: 1)))
+                    .focused($textFocused)
                     .onSubmit { commitTextEdit() }
                     .frame(maxWidth: 320, alignment: .leading)
             } else {
@@ -888,8 +1121,11 @@ struct FieldView: View {
     }
 
     private func beginTextEdit(_ note: TextNote) {
+        dismissAllEditing()
+        selection = .text(note.id)
         textEditDraft = note.text
         editingTextId = note.id
+        textFocused = true
     }
 
     private func commitTextEdit() {
@@ -903,6 +1139,7 @@ struct FieldView: View {
     private func textDragGesture(for note: TextNote) -> some Gesture {
         DragGesture(coordinateSpace: .global)
             .onChanged { value in
+                selection = .text(note.id)
                 draggingSnapshot = (note.id, value.translation)
             }
             .onEnded { value in
@@ -921,7 +1158,7 @@ struct FieldView: View {
     private func imageNoteView(_ image: ImageNote) -> some View {
         let isSelected = selection == .image(image.id)
         ImageNoteView(image: image)
-            .frame(width: CGFloat(image.width), height: CGFloat(image.height))
+            .frame(width: displayRect(image).width, height: displayRect(image).height)
             .clipShape(RoundedRectangle(cornerRadius: 4))
             .overlay(
                 RoundedRectangle(cornerRadius: 4)
@@ -939,6 +1176,7 @@ struct FieldView: View {
     private func imageDragGesture(for image: ImageNote) -> some Gesture {
         DragGesture(coordinateSpace: .global)
             .onChanged { value in
+                selection = .image(image.id)
                 draggingSnapshot = (image.id, value.translation)
             }
             .onEnded { value in
@@ -1089,9 +1327,8 @@ struct FieldView: View {
             return nil
         }
         let drag = draggingOffset(for: id)
-        return CGPoint(
-            x: snap.x + snap.width / 2 + drag.width,
-            y: snap.y + snap.height / 2 + drag.height)
+        return CGPoint(x: displayRect(snap).midX + drag.width,
+                       y: displayRect(snap).midY + drag.height)
     }
 
     private func handleConnectorPick(snapshotId: UUID) {
@@ -1295,7 +1532,7 @@ struct FieldView: View {
             let spacing = Self.gridSpacing
             // Dot color tuned to be subtly visible against the
             // backdrop without competing with frames.
-            let dotColor = Color(white: 0.78)
+            let dotColor = Color.primary.opacity(0.12)
             let radius: CGFloat = 0.9
             var x: CGFloat = 0
             while x < size.width {
@@ -1366,7 +1603,7 @@ struct FieldView: View {
     private var magnifyGesture: some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                let factor = value.magnification
+                let factor = clampScale(scale * value.magnification) / scale
                 pendingScale = factor
 
                 // The anchor is the start-of-pinch screen point
@@ -1404,7 +1641,7 @@ struct FieldView: View {
     /// Hard-clamp zoom so the user can't pinch into oblivion or
     /// invert the canvas. Half-size up to 4× is plenty for arranging.
     private func clampScale(_ s: CGFloat) -> CGFloat {
-        max(0.25, min(4.0, s))
+        max(0.05, min(4.0, s))
     }
 
     private func dragGesture(for snapshot: Snapshot) -> some Gesture {
@@ -1422,6 +1659,7 @@ struct FieldView: View {
         // divide screen-pts by scale to get field-pts.
         DragGesture(coordinateSpace: .global)
             .onChanged { value in
+                selection = .snapshot(snapshot.id)
                 draggingSnapshot = (snapshot.id, value.translation)
             }
             .onEnded { value in
@@ -1444,9 +1682,15 @@ struct FieldView: View {
     private func centerSketchOnce(in size: CGSize) {
         guard !didCenter else { return }
         didCenter = true
+        if !store.canvas.snapshots.isEmpty || !store.canvas.images.isEmpty || !store.canvas.texts.isEmpty {
+            fitContent()
+            return
+        }
+        scale = min(1, clampScale(min((size.width - 48) / Self.sketchSize.width,
+                                      (size.height - 48) / Self.sketchSize.height)))
         pan = CGSize(
-            width: (size.width - Self.sketchSize.width) / 2,
-            height: (size.height - Self.sketchSize.height) / 2)
+            width: (size.width - Self.sketchSize.width * scale) / 2,
+            height: (size.height - Self.sketchSize.height * scale) / 2)
     }
 }
 
@@ -1492,19 +1736,25 @@ struct ResizeHandle: View {
 /// parent FieldView attaches gestures.
 private struct ImageNoteView: View {
     let image: ImageNote
+    @State private var decodedImage: Image?
 
     var body: some View {
-        if let img = Self.image(from: image.data) {
-            img
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-        } else {
-            Rectangle()
-                .fill(Color.secondary.opacity(0.2))
-                .overlay(
-                    Text("Image")
-                        .font(.caption)
-                        .foregroundStyle(.secondary))
+        Group {
+            if let img = decodedImage {
+                img
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.2))
+                    .overlay(
+                        Text("Image")
+                            .font(.caption)
+                            .foregroundStyle(.secondary))
+            }
+        }
+        .onChange(of: image.data, initial: true) { _, data in
+            decodedImage = Self.image(from: data)
         }
     }
 

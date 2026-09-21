@@ -24,9 +24,9 @@ struct OfflineBanner: View {
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Offline")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.callout.weight(.semibold))
                 Text("Your edits stay on this device and will sync when you reconnect.")
-                    .font(.system(size: 11))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
@@ -40,6 +40,7 @@ struct OfflineBanner: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.orange.opacity(0.35), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.08), radius: 4, x: 0, y: 1)
+        .frame(maxWidth: 560)
         .padding(.horizontal, 14)
         .padding(.top, 10)
     }

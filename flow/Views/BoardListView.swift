@@ -33,6 +33,14 @@ struct BoardListView: View {
 
     /// Sheet state for "join a shared board".
     @State private var joining = false
+    @State private var isCreating = false
+    @State private var actionError: String?
+    @State private var searchText = ""
+    @State private var pendingDeletion: [UUID] = []
+
+    private var filteredBoards: [BoardSummary] {
+        library.boards.filter { searchText.isEmpty || $0.name.localizedStandardContains(searchText) }
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -44,13 +52,29 @@ struct BoardListView: View {
                 }
             }
             .navigationTitle("Boards")
+            .searchable(text: $searchText, prompt: "Find a board")
+            .alert("Couldn’t complete action", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
+                Button("OK") { actionError = nil }
+            } message: { Text(actionError ?? "") }
+            .confirmationDialog("Delete board?", isPresented: Binding(
+                get: { !pendingDeletion.isEmpty },
+                set: { if !$0 { pendingDeletion = [] } }), titleVisibility: .visible) {
+                    Button("Delete", role: .destructive) {
+                        let ids = pendingDeletion
+                        pendingDeletion = []
+                        ids.forEach(deleteBoard)
+                    }
+                } message: {
+                    Text("This removes the local copy from this device. This action can’t be undone.")
+                }
             .toolbar { toolbarContent }
             .navigationDestination(for: UUID.self) { id in
                 BoardOpenView(boardId: id)
             }
             .sheet(item: $renaming) { summary in
                 RenameSheet(summary: summary) { newName in
-                    try? library.rename(id: summary.id, to: newName)
+                    do { try library.rename(id: summary.id, to: newName) }
+                    catch { actionError = error.localizedDescription }
                 }
             }
             .sheet(isPresented: $joining) {
@@ -67,31 +91,36 @@ struct BoardListView: View {
         ContentUnavailableView {
             Label("No boards yet", systemImage: "rectangle.on.rectangle")
         } description: {
-            Text("Tap + to start your first board, or join one someone shared with you.")
+            Text("A little space for your next big idea. Sketch, collect, and create together.")
         } actions: {
+            Button(action: createBoard) { Label("Create a board", systemImage: "plus") }
+                .buttonStyle(.borderedProminent)
+                .disabled(isCreating)
             Button("Join a shared board…") { joining = true }
+                .buttonStyle(.bordered)
         }
     }
 
     private var boardList: some View {
         List {
-            ForEach(library.boards) { summary in
+            ForEach(filteredBoards) { summary in
                 NavigationLink(value: summary.id) {
                     BoardRow(summary: summary)
                 }
                 .contextMenu {
                     Button("Rename") { renaming = summary }
                     Button("Delete", role: .destructive) {
-                        try? library.deleteBoard(id: summary.id)
+                        pendingDeletion = [summary.id]
                     }
                 }
             }
             .onDelete { indexSet in
-                for i in indexSet {
-                    let id = library.boards[i].id
-                    try? library.deleteBoard(id: id)
-                }
+                pendingDeletion = indexSet.map { filteredBoards[$0].id }
             }
+        }
+        .listStyle(.inset)
+        .overlay {
+            if filteredBoards.isEmpty { ContentUnavailableView.search(text: searchText) }
         }
     }
 
@@ -106,23 +135,32 @@ struct BoardListView: View {
             Button {
                 createBoard()
             } label: {
-                Label("New Board", systemImage: "plus")
+                Label(isCreating ? "Creating…" : "New Board", systemImage: "plus")
             }
+            .disabled(isCreating)
+            .keyboardShortcut("n", modifiers: .command)
         }
     }
 
     // MARK: - Actions
 
     private func createBoard() {
+        guard !isCreating else { return }
+        isCreating = true
         let name = "Untitled \(library.boards.count + 1)"
         Task {
+            defer { isCreating = false }
             do {
                 let summary = try await library.createBoard(name: name)
                 path.append(summary.id)
             } catch {
-                assertionFailure("createBoard failed: \(error)")
+                actionError = error.localizedDescription
             }
         }
+    }
+    private func deleteBoard(_ id: UUID) {
+        do { try library.deleteBoard(id: id) }
+        catch { actionError = error.localizedDescription }
     }
 }
 
@@ -132,14 +170,24 @@ private struct BoardRow: View {
     let summary: BoardSummary
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(summary.name)
-                .font(.headline)
-            Text(summary.updatedAt, style: .relative)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        HStack(spacing: 16) {
+            Image(systemName: "rectangle.on.rectangle")
+                .font(.title2.weight(.medium))
+                .foregroundStyle(.tint)
+                .frame(width: 52, height: 52)
+                .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(summary.name)
+                    .font(.headline)
+                    .lineLimit(2)
+                Text(summary.updatedAt, style: .relative)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 10)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -237,6 +285,7 @@ private struct RenameSheet: View {
                         if !trimmed.isEmpty { onCommit(trimmed) }
                         dismiss()
                     }
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }

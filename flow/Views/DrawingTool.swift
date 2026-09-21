@@ -59,6 +59,11 @@ enum DrawingPalette {
     /// marker, and big-marker. Discrete (not a slider) because
     /// continuous width feels twitchy when you're aiming at it
     /// with a finger.
+    static func name(for color: UInt32) -> String {
+        let names = ["Black", "Red", "Orange", "Yellow", "Green", "Blue", "Purple", "White"]
+        return colors.firstIndex(of: color).map { names[$0] } ?? "Custom color"
+    }
+
     static let widths: [Double] = [1.5, 2.5, 5.0, 9.0]
 }
 
@@ -84,15 +89,7 @@ struct ToolbarPill: View {
             widthButton
         }
         .padding(6)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(.thinMaterial)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.black.opacity(0.08), lineWidth: 0.5)
-        )
-        .shadow(color: .black.opacity(0.14), radius: 10, x: 0, y: 3)
+        .floatingGlass()
     }
 
     // MARK: Tool segment
@@ -103,15 +100,17 @@ struct ToolbarPill: View {
                 Button { tool = option } label: {
                     Image(systemName: option.systemImage)
                         .font(.system(size: 16, weight: .medium))
-                        .frame(width: 38, height: 32)
+                        .frame(width: 44, height: 44)
                         .foregroundStyle(
                             tool == option ? Color.white : Color.primary.opacity(0.7))
                         .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .fill(tool == option ? Color.accentColor : Color.clear))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(option.accessibilityLabel)
+                .accessibilityAddTraits(tool == option ? .isSelected : [])
+                .help(option.accessibilityLabel)
             }
         }
     }
@@ -134,11 +133,12 @@ struct ToolbarPill: View {
                 .frame(width: 24, height: 24)
                 .overlay(
                     Circle()
-                        .stroke(Color.black.opacity(0.15), lineWidth: 0.5))
-                .padding(.horizontal, 4)
+                        .stroke(Color.primary.opacity(0.3), lineWidth: 1))
+                .frame(width: 44, height: 44)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Color")
+        .accessibilityLabel("Ink color")
+        .accessibilityValue(DrawingPalette.name(for: color))
         .popover(isPresented: $showColorPicker, arrowEdge: .bottom) {
             ColorGrid(color: $color, palette: DrawingPalette.colors) {
                 showColorPicker = false
@@ -156,16 +156,17 @@ struct ToolbarPill: View {
             // the toolbar tells you the current stroke size at a
             // glance, even without opening the picker.
             ZStack {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(Color.clear)
-                    .frame(width: 32, height: 32)
-                Circle()
-                    .fill(Color(rgba: color))
-                    .frame(width: widthPreviewSize, height: widthPreviewSize)
+                    .frame(width: 44, height: 44)
+                Image(systemName: "lineweight")
+                    .font(.system(size: 19, weight: .medium))
+                    .foregroundStyle(.primary)
             }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Width")
+        .accessibilityLabel("Stroke width")
+        .accessibilityValue("\(width.formatted()) points")
         .popover(isPresented: $showWidthPicker, arrowEdge: .bottom) {
             WidthGrid(width: $width, color: color, widths: DrawingPalette.widths) {
                 showWidthPicker = false
@@ -193,10 +194,10 @@ private struct ColorGrid: View {
 
     /// Two rows of four — fits without scrolling and reads as a
     /// proper palette rather than a long line.
-    private let columns = [GridItem(.fixed(30), spacing: 10),
-                           GridItem(.fixed(30), spacing: 10),
-                           GridItem(.fixed(30), spacing: 10),
-                           GridItem(.fixed(30), spacing: 10)]
+    private let columns = [GridItem(.fixed(44), spacing: 4),
+                           GridItem(.fixed(44), spacing: 4),
+                           GridItem(.fixed(44), spacing: 4),
+                           GridItem(.fixed(44), spacing: 4)]
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 10) {
@@ -213,8 +214,12 @@ private struct ColorGrid: View {
                                 .stroke(
                                     swatch == color ? Color.accentColor : Color.black.opacity(0.15),
                                     lineWidth: swatch == color ? 2.5 : 0.5))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(DrawingPalette.name(for: swatch))
+                .accessibilityAddTraits(swatch == color ? .isSelected : [])
             }
         }
     }
@@ -252,7 +257,7 @@ private struct WidthGrid: View {
                         }
                     }
                     .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
+                    .frame(minHeight: 44)
                     .background(
                         RoundedRectangle(cornerRadius: 6)
                             .fill(abs(w - width) < 0.01
@@ -260,6 +265,8 @@ private struct WidthGrid: View {
                                   : Color.clear))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("\(w.formatted()) points")
+                .accessibilityAddTraits(abs(w - width) < 0.01 ? .isSelected : [])
             }
         }
     }
